@@ -53,6 +53,15 @@ start:
     test edx, 1 << 29
     jz .no_lm
 
+    ; enable SSE (x86_64 baseline): CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1
+    mov eax, cr0
+    and eax, 0xFFFFFFFB
+    or eax, 0x00000002
+    mov cr0, eax
+    mov eax, cr4
+    or eax, 0x00000600
+    mov cr4, eax
+
     
     call init_paging
     call init_gdt64

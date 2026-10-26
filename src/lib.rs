@@ -1733,6 +1733,74 @@ fn fetch_info() -> &'static str {
     }
 }
 
+fn fmt_num(mut v: usize, buf: &mut [u8; 20]) -> &[u8] {
+    let mut d = [0u8; 20];
+    let mut i = 0usize;
+    if v == 0 { d[0] = b'0'; i = 1; }
+    while v > 0 && i < 20 { d[i] = b'0' + (v % 10) as u8; v /= 10; i += 1; }
+    let mut j = 0usize;
+    while i > 0 { i -= 1; buf[j] = d[i]; j += 1; }
+    &buf[..j]
+}
+
+fn mem_info() -> &'static str {
+    static mut BUF: [u8; 128] = [0; 128];
+    unsafe {
+        let mut n = 0usize;
+        let mut put = |b: &[u8]| { for x in b { if n < BUF.len() { BUF[n] = *x; n += 1; } } };
+        let total_mb = TECH_RAM_MB as usize;
+        let used_kb = crate::heap::used() / 1024;
+        let free_kb = crate::heap::free() / 1024;
+        put(b"Memory: ");
+        let mut b1 = [0u8; 20];
+        put(fmt_num(total_mb, &mut b1));
+        put(b" MB total\nHeap: ");
+        let mut b2 = [0u8; 20];
+        put(fmt_num(used_kb, &mut b2));
+        put(b" KB used, ");
+        let mut b3 = [0u8; 20];
+        put(fmt_num(free_kb, &mut b3));
+        put(b" KB free");
+        core::str::from_utf8(&BUF[..n]).unwrap_or("Memory info unavailable")
+    }
+}
+
+fn uptime_info() -> &'static str {
+    static mut BUF: [u8; 48] = [0; 48];
+    unsafe {
+        let up = (crate::timer::millis() / 1000) as usize;
+        let h = up / 3600;
+        let m = (up % 3600) / 60;
+        let s = up % 60;
+        let mut n = 0usize;
+        let mut put = |b: &[u8]| { for x in b { if n < BUF.len() { BUF[n] = *x; n += 1; } } };
+        put(b"Uptime: ");
+        let mut b1 = [0u8; 20];
+        put(fmt_num(h, &mut b1));
+        put(b"h ");
+        let mut b2 = [0u8; 20];
+        put(fmt_num(m, &mut b2));
+        put(b"m ");
+        let mut b3 = [0u8; 20];
+        put(fmt_num(s, &mut b3));
+        put(b"s");
+        core::str::from_utf8(&BUF[..n]).unwrap_or("Uptime: 0h 0m 0s")
+    }
+}
+
+fn dice_roll() -> &'static str {
+    static mut BUF: [u8; 16] = [0; 16];
+    let v = ((crate::timer::rdtsc() % 6) + 1) as usize;
+    unsafe {
+        let mut n = 0usize;
+        let mut put = |b: &[u8]| { for x in b { if n < BUF.len() { BUF[n] = *x; n += 1; } } };
+        put(b"Dice: ");
+        let mut b1 = [0u8; 20];
+        put(fmt_num(v, &mut b1));
+        core::str::from_utf8(&BUF[..n]).unwrap_or("Dice: 1")
+    }
+}
+
 fn clip_str(s: &str, max: usize) -> &str {
     if s.len() <= max { return s; }
     let mut n = max;
@@ -5088,9 +5156,9 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)",
                     "ver" => "MiLuna 1.0.0",
                     "fetch" | "neofetch" => fetch_info(),
-                    "mem" => "Memory: 4096 MB",
-                    "uptime" => "Uptime: 0 ticks",
-                    "dice" => "Dice: 4",
+                    "mem" => mem_info(),
+                    "uptime" => uptime_info(),
+                    "dice" => dice_roll(),
                     "fs" => "FAT32",
                     "tutorial" => open_tutorial(),
                     "miluna/grap/wm2.rs" => switch_to_wm2_theme(),
