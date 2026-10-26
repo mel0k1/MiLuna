@@ -24,7 +24,7 @@ pub fn exec(cmd: &str) -> Option<&'static str> {
             let host = parts.next().unwrap_or("google.com");
             Some(leak(match net::resolve(host) { Ok(ip) => format!("{} -> {}", host, ip), Err(e) => e }))
         }
-        "wget" | "curl" | "fetch" => {
+        "wget" | "curl" => {
             let mut u = parts.next().unwrap_or("google.com");
             let mut scheme = "http";
             if u == "-s" { scheme = "https"; u = parts.next().unwrap_or("google.com"); }
