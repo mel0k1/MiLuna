@@ -1,4 +1,7 @@
-target/
-iso/
-*.iso
-*.img
+/target
+/iso
+/*.iso
+/initrd.tar
+/fat32.img
+*.log
+.DS_Store
