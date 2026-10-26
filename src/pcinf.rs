@@ -738,8 +738,8 @@ pub fn draw_pcinf_content(gfx: &mut Graphics, cx: usize, cy: usize, w: usize, h:
     
     draw_section(gfx, &mut ctx, "Operating System");
 
-    draw_kv(gfx, &mut ctx, "Name:", "MiUX 7.0.0", 0x404040, 0x000000);
-    draw_kv(gfx, &mut ctx, "Kernel:", "Miux 7.0.0 (x64)", 0x404040, 0x000000);
+    draw_kv(gfx, &mut ctx, "Name:", "MiLuna 1.0.0", 0x404040, 0x000000);
+    draw_kv(gfx, &mut ctx, "Kernel:", "MiLuna 1.0.0 (x64)", 0x404040, 0x000000);
     draw_kv(gfx, &mut ctx, "Build:", "2026", 0x404040, 0x000000);
     draw_kv(gfx, &mut ctx, "Vendor:", "MDEVS", 0x404040, 0x000000);
 

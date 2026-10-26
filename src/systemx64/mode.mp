@@ -14,8 +14,8 @@ input{padding:0 5px;height:25px;width:180px;font-size:13px;border:1px solid #9a9
 </head>
 <body>
 <div class="stage">
-<p style="left:7px;top:4px;color:#ffffff;font-weight:900;">MiUX Normal work mode</p>
-<p style="left:6px;top:31px;color:#ffffff;font-weight:300;">MiUX 7.0.0 build 17.10.2026</p>
+<p style="left:7px;top:4px;color:#ffffff;font-weight:900;">MiLuna Normal work mode</p>
+<p style="left:6px;top:31px;color:#ffffff;font-weight:300;">MiLuna 1.0.0 build 26.10.2026</p>
 </div>
 </body>
 </html>

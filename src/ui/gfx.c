@@ -119,20 +119,20 @@ int ui_text_chars(const u8 *s, usize len) {
 void ui_text(int x, int y, const char *s, u32 fg, u32 bg) {
     usize n = 0;
     while (s[n]) n++;
-    if (x >= 0 && y >= 0) miux_ui_text(x, y, (const u8 *)s, n, fg, bg);
+    if (x >= 0 && y >= 0) miluna_ui_text(x, y, (const u8 *)s, n, fg, bg);
 }
 
 void ui_text_fit(int x, int y, const u8 *s, usize len, u32 fg, u32 bg, int max_px) {
     int maxc = max_px / 8;
     if (maxc <= 0 || x < 0 || y < 0) return;
     int n = ui_text_chars(s, len);
-    if (n <= maxc) { miux_ui_text(x, y, s, len, fg, bg); return; }
+    if (n <= maxc) { miluna_ui_text(x, y, s, len, fg, bg); return; }
     if (maxc <= 2) return;
     int keep = maxc - 2, c = 0;
     usize i = 0;
     for (; i < len; i++) {
         if ((s[i] & 0xC0) != 0x80) { if (c == keep) break; c++; }
     }
-    miux_ui_text(x, y, s, i, fg, bg);
-    miux_ui_text(x + keep * 8, y, (const u8 *)"..", 2, fg, bg);
+    miluna_ui_text(x, y, s, i, fg, bg);
+    miluna_ui_text(x + keep * 8, y, (const u8 *)"..", 2, fg, bg);
 }

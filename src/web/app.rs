@@ -165,7 +165,7 @@ input[type=text] {{ width: 380px; }}
 li {{ margin: 4px 0; }}
 .note {{ color: #666; font-size: 13px; }}
 </style></head><body>
-<div class="top"><h1>MiUX Browser</h1>Встроенный браузер MiUX</div>
+<div class="top"><h1>MiLuna Browser</h1>Встроенный браузер MiLuna</div>
 <div class="box"><h2>Поиск Google</h2>
 <form action="https://www.google.com/search" method="get"><input type="text" name="q" placeholder="Введите запрос"> <input type="submit" value="Найти"></form>
 <p class="note">Клавиша EN/RU на панели переключает раскладку. Адрес можно вводить без https://</p></div>
@@ -303,7 +303,7 @@ fn load_css(base: &Url, href: &str, env: &css::MediaEnv, order: u32, prog: Prog,
     if *count >= 10 { return None; }
     *count += 1;
     let u = base.join(href)?;
-    if u.host == "app.miux" { return None; }
+    if u.host == "app.miluna" { return None; }
     prog(&format!("Загрузка стилей {}", u.host));
     let r = http::fetch(&u, None, prog).ok()?;
     if r.status != 200 { return None; }
@@ -574,12 +574,12 @@ impl Browser {
         let _ = gfx;
         let url_s = nav.url.clone();
         let (html_src, final_url) = if self.kiosk {
-            (self.local.clone(), Url::parse("http://app.miux/").unwrap())
+            (self.local.clone(), Url::parse("http://app.miluna/").unwrap())
         } else if url_s.eq_ignore_ascii_case(HOME_URL) || url_s.eq_ignore_ascii_case("about:blank") {
-            (if url_s.eq_ignore_ascii_case(HOME_URL) { home_html() } else { String::new() }, Url::parse("http://home.miux/").unwrap())
+            (if url_s.eq_ignore_ascii_case(HOME_URL) { home_html() } else { String::new() }, Url::parse("http://home.miluna/").unwrap())
         } else {
             match Url::parse(&url_s) {
-                None => (error_html(&url_s, "Неверный адрес"), Url::parse("http://error.miux/").unwrap()),
+                None => (error_html(&url_s, "Неверный адрес"), Url::parse("http://error.miluna/").unwrap()),
                 Some(u) => {
                     let post = nav.post.as_ref().map(|(b, t)| (&b[..], t.as_str()));
                     let mut res = http::fetch(&u, post, &mut prog);
@@ -628,7 +628,7 @@ impl Browser {
         let idx = match d.img_idx.get(&src) { Some(&i) => i, None => return true };
         let data = if src.starts_with("data:") {
             match src.find(',') { Some(c) if src[..c].contains("base64") => Some(b64_decode(&src[c + 1..])), _ => None }
-        } else if let Some(u) = d.base.join(&src).filter(|u| u.host != "app.miux") {
+        } else if let Some(u) = d.base.join(&src).filter(|u| u.host != "app.miluna") {
             let mut nop = |_: &str| {};
             match http::fetch(&u, None, &mut nop) { Ok(r) if r.status == 200 => Some(r.body), _ => None }
         } else { None };

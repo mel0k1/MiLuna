@@ -140,7 +140,7 @@ impl UserManager {
         user.set_username(username);
         user.set_password(password);
         user.is_admin = is_admin;
-        let home = "/miux/users/";
+        let home = "/miluna/users/";
         user.set_home_dir(home);
         user.created = 0;
         

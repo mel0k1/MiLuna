@@ -20,7 +20,7 @@ static SX_CALC: &[u8] = include_bytes!("systemx64/calc.mp");
 static GRUB_BOOT_IMG: &[u8] = include_bytes!("../target/grub_boot.img");
 static GRUB_CORE_IMG: &[u8] = include_bytes!("../target/grub_core.img");
 
-const KERNEL_NAME: &str = "MIUX.ELF";
+const KERNEL_NAME: &str = "MILUNA.ELF";
 
 pub fn wanted(info_addr: u32) -> bool {
     unsafe {
@@ -237,18 +237,18 @@ fn build_page(w: &Wiz, disks: &[DiskItem], iw: usize) -> (&'static str, Vec<Item
     let mut it: Vec<Item> = Vec::new();
     match w.page {
         P_WELCOME => {
-            paras(&mut it, "Добро пожаловать в установку MiUX 7.0.0!", iw, C_BLACK);
+            paras(&mut it, "Добро пожаловать в установку MiLuna 1.0.0!", iw, C_BLACK);
             it.push(Item::Blank);
-            paras(&mut it, "Официальный сайт: https://miux.phoneget.top", iw, C_BLACK);
+            paras(&mut it, "Официальный сайт: https://github.com/mel0k1/MiLuna", iw, C_BLACK);
             it.push(Item::Blank);
             let mut m: Vec<(String, String)> = Vec::new();
-            m.push((String::from("Установка"), String::from("Установить MiUX на жёсткий диск")));
+            m.push((String::from("Установка"), String::from("Установить MiLuna на жёсткий диск")));
             m.push((String::from("Перезагрузка"), String::from("Перезагрузить компьютер")));
             it.push(Item::Menu(m, w.wsel));
-            ("Установка MiUX", it, B_SELECT_CANCEL)
+            ("Установка MiLuna", it, B_SELECT_CANCEL)
         }
         P_DISK => {
-            paras(&mut it, "Выберите диск, на который будет установлена MiUX:", iw, C_BLACK);
+            paras(&mut it, "Выберите диск, на который будет установлена MiLuna:", iw, C_BLACK);
             it.push(Item::Blank);
             let mut m: Vec<(String, String)> = Vec::new();
             for (i, d) in disks.iter().enumerate() {
@@ -302,7 +302,7 @@ fn build_page(w: &Wiz, disks: &[DiskItem], iw: usize) -> (&'static str, Vec<Item
             ("Последний шанс!", it, B_YES_NO)
         }
         P_INSTALL => {
-            paras(&mut it, "Идёт установка MiUX. Не выключайте компьютер.", iw, C_BLACK);
+            paras(&mut it, "Идёт установка MiLuna. Не выключайте компьютер.", iw, C_BLACK);
             it.push(Item::Blank);
             it.push(Item::Text(String::from("Общий прогресс:"), C_BLACK));
             it.push(Item::Bar(w.overall));
@@ -311,10 +311,10 @@ fn build_page(w: &Wiz, disks: &[DiskItem], iw: usize) -> (&'static str, Vec<Item
             it.push(Item::Bar(w.cur));
             it.push(Item::Blank);
             it.push(Item::Log(w.log.clone(), true));
-            ("Установка MiUX", it, B_NONE)
+            ("Установка MiLuna", it, B_NONE)
         }
         P_DONE => {
-            it.push(Item::Text(String::from("MiUX успешно установлена!"), C_GRN));
+            it.push(Item::Text(String::from("MiLuna успешно установлена!"), C_GRN));
             it.push(Item::Blank);
             paras(&mut it, "Извлеките CD/ISO из привода, затем нажмите Enter (или любую клавишу) для перезагрузки.", iw, C_BLACK);
             it.push(Item::Blank);
@@ -342,7 +342,7 @@ fn draw_screen(g: &mut Graphics, cols: usize, rows: usize, w: &Wiz, disks: &[Dis
     let sw = g.width;
     let sh = g.height;
     g.fill_rect(0, 0, sw, sh, C_BACK);
-    put(g, 1, 0, "MiUX Installer", C_WHITE, C_BACK);
+    put(g, 1, 0, "MiLuna Installer", C_WHITE, C_BACK);
 
     let bw = if cols > 76 { 68 } else if cols > 12 { cols - 8 } else { cols };
     let iw = bw.saturating_sub(6);
@@ -871,19 +871,19 @@ fn do_install(ui: &mut Ui, w: &mut Wiz, disks: &[DiskItem], disk: usize, payload
     let auto_text = format!("autologin={}\n", if w.auto == 1 { 1 } else { 0 });
 
     prog(ui, w, disks, 0, 0, "Форматирование диска в FAT32...");
-    let r = unsafe { fat32::format(disk, "MIUX") };
+    let r = unsafe { fat32::format(disk, "MILUNA") };
     r.map_err(String::from)?;
     step_done(ui, w, disks, 15, "Диск отформатирован (FAT32)");
 
-    prog(ui, w, disks, 15, 0, "Создание папки MiUX...");
+    prog(ui, w, disks, 15, 0, "Создание папки MiLuna...");
     let r = unsafe { fat32::create_dir(fat32::SYS_DIR) };
     r.map_err(String::from)?;
-    step_done(ui, w, disks, 18, "Создана дерриктория MiUX");
+    step_done(ui, w, disks, 18, "Создана дерриктория MiLuna");
 
-    prog(ui, w, disks, 18, 0, "Копирование ядра MIUX.ELF...");
+    prog(ui, w, disks, 18, 0, "Копирование ядра MILUNA.ELF...");
     let r = unsafe { fat32::save_file_in_dir(fat32::SYS_DIR, KERNEL_NAME, payload) };
     r.map_err(String::from)?;
-    step_done(ui, w, disks, 58, "Ядро MIUX.ELF скопировано");
+    step_done(ui, w, disks, 58, "Ядро MILUNA.ELF скопировано");
 
     prog(ui, w, disks, 58, 0, "Создание system.cfg...");
     let cfg_text = syscfg::defaults_text();
@@ -898,7 +898,7 @@ fn do_install(ui: &mut Ui, w: &mut Wiz, disks: &[DiskItem], disk: usize, payload
     r.map_err(String::from)?;
     let r = unsafe { fat32::save_file_in_subdir(fat32::SYS_DIR, fat32::USERS_DIR, "auto.cfg", auto_text.as_bytes()) };
     r.map_err(String::from)?;
-    step_done(ui, w, disks, 68, "Создан пользователь /MiUX/USERS/");
+    step_done(ui, w, disks, 68, "Создан пользователь /MiLuna/USERS/");
 
     prog(ui, w, disks, 68, 0, "Создание папки ryles...");
     let r = unsafe { fat32::create_subdir(fat32::SYS_DIR, "ryles") };
@@ -980,7 +980,7 @@ pub fn run(g: &mut Graphics, info_addr: u32) -> ! {
     let payload = unsafe { find_payload(info_addr) };
     if payload.is_none() {
         w.page = P_ERROR;
-        w.err = String::from("Модуль ядра не загружен GRUB. Запустите установку через пункт MiUX Install.");
+        w.err = String::from("Модуль ядра не загружен GRUB. Запустите установку через пункт MiLuna Install.");
         unsafe {
             let total = *(info_addr as *const u32) as usize;
             let mut off = 8usize;

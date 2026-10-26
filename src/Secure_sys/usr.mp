@@ -16,8 +16,8 @@ input{padding:6px;}
 <div class="stage">
 <h2 style="left:0px;top:0px;color:#1f2a3f;font-weight:bold;">Отказанно в доступе</h2>
 <p style="left:0px;top:47px;color:#1f2a3f;font-weight:normal;">Чтение и редактирование user.cfg запрещенно</p>
-<p style="left:0px;top:82px;color:#1f2a3f;font-weight:normal;">системой безопасности MiUX</p>
-<p style="left:0px;top:152px;color:#ff0000;font-weight:600;">Error edit &quot;Disk 1:/MiUX/USERS/user.cfg/&quot;</p>
+<p style="left:0px;top:82px;color:#1f2a3f;font-weight:normal;">системой безопасности MiLuna</p>
+<p style="left:0px;top:152px;color:#ff0000;font-weight:600;">Error edit &quot;Disk 1:/MiLuna/USERS/user.cfg/&quot;</p>
 <hr style="left:0px;top:119px;width:200px;">
 </div>
 </body>

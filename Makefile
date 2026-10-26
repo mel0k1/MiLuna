@@ -1,6 +1,6 @@
 TARGET  = x86_64-unknown-none
-KERNEL  = target/miux.elf
-ISO     = MiUX.iso
+KERNEL  = target/miluna.elf
+ISO     = MiLuna.iso
 INITRD  = initrd.tar
 CARGO   = cargo +nightly
 VGA    ?= std
@@ -37,8 +37,8 @@ check-deps:
 
 $(INITRD):
 	@mkdir -p initrd
-	@echo "MiUX 5" > initrd/config.txt
-	@echo "Welcome!" > initrd/readme.txt
+	@echo "MiLuna 1.0" > initrd/config.txt
+	@echo "Welcome to MiLuna!" > initrd/readme.txt
 	@echo "mode=normal" > initrd/boot.cfg
 	@cd initrd && tar -cf ../$(INITRD) * 2>/dev/null || true
 	@echo "  InitRD created"
@@ -70,7 +70,7 @@ target/grub_embed.cfg: Makefile
 	@mkdir -p target
 	@printf '%s\n' \
 		'set gfxpayload=keep' \
-		'multiboot2 /MIUX/MIUX.ELF' \
+		'multiboot2 /MILUNA/MILUNA.ELF' \
 		'boot' \
 		> $@
 
@@ -78,7 +78,7 @@ target/grub_core.img: target/grub_embed.cfg
 	grub-mkimage -O i386-pc -d $(GRUB_I386) -p '(,msdos1)/' -c target/grub_embed.cfg \
 		-o $@ biosdisk part_msdos fat multiboot2 boot echo all_video vbe
 
-target/$(TARGET)/release/libmiux.a: FORCE target/grub_boot.img target/grub_core.img
+target/$(TARGET)/release/libmiluna.a: FORCE target/grub_boot.img target/grub_core.img
 	RUSTFLAGS="-C link-arg=-nostdlib -C relocation-model=static -C code-model=kernel -C no-redzone=yes" \
 	$(CARGO) build --release \
 		-Z build-std=core,compiler_builtins,alloc \
@@ -88,30 +88,30 @@ target/$(TARGET)/release/libmiux.a: FORCE target/grub_boot.img target/grub_core.
 
 FORCE:
 
-$(KERNEL): target/boot.o $(UI_OBJ) target/$(TARGET)/release/libmiux.a linker.ld
+$(KERNEL): target/boot.o $(UI_OBJ) target/$(TARGET)/release/libmiluna.a linker.ld
 	$(LLD) -T linker.ld -o $@ \
 		target/boot.o \
 		$(UI_OBJ) \
-		target/$(TARGET)/release/libmiux.a \
+		target/$(TARGET)/release/libmiluna.a \
 		--gc-sections \
 		-z max-page-size=0x1000
 	@echo "  Kernel linked: $(KERNEL)"
 
 $(ISO): $(KERNEL) $(INITRD)
 	@rm -rf iso
-	@mkdir -p iso/boot/grub/fonts iso/miux
-	cp $(KERNEL) iso/boot/miux.elf
+	@mkdir -p iso/boot/grub/fonts iso/miluna
+	cp $(KERNEL) iso/boot/miluna.elf
 	cp $(INITRD) iso/boot/initrd.tar
 	@if [ -f /usr/share/grub/unicode.pf2 ]; then \
 		cp /usr/share/grub/unicode.pf2 iso/boot/grub/fonts/; \
 	fi
 	@if [ -f background.png ]; then cp background.png iso/boot/grub/background.png; fi
 
-	@echo "mode=normal" > iso/miux/boot.cfg
-	@echo "vesa=true"   >> iso/miux/boot.cfg
-	@echo "mode=debug"  > iso/miux/debug.cfg
-	@echo "vesa=true"   >> iso/miux/debug.cfg
-	@echo "verbose=true">> iso/miux/debug.cfg
+	@echo "mode=normal" > iso/miluna/boot.cfg
+	@echo "vesa=true"   >> iso/miluna/boot.cfg
+	@echo "mode=debug"  > iso/miluna/debug.cfg
+	@echo "vesa=true"   >> iso/miluna/debug.cfg
+	@echo "verbose=true">> iso/miluna/debug.cfg
 
 	@printf '%s\n' \
 		'set timeout=15' \
@@ -127,17 +127,17 @@ $(ISO): $(KERNEL) $(INITRD)
 		'echo "[BOOT] Welcome to GRUB!"' \
 		'echo ""' \
 		'' \
-		'menuentry "Boot MiUX (LiveCD)" --class miux {' \
-		'    echo "[ GRUB ] Load Miux... [ OK ]"' \
-		'    multiboot2 /boot/miux.elf' \
+		'menuentry "Boot MiLuna (LiveCD)" --class miluna {' \
+		'    echo "[ GRUB ] Load MiLuna... [ OK ]"' \
+		'    multiboot2 /boot/miluna.elf' \
 		'    initrd /boot/initrd.tar' \
 		'    boot' \
 		'}' \
 		'' \
-		'menuentry "Install MiUX (Standart)" --class install {' \
-		'    echo "[ GRUB ] Load MiUX Installer... [ OK ]"' \
-		'    multiboot2 /boot/miux.elf install' \
-		'    module2 /boot/miux.elf miux_payload' \
+		'menuentry "Install MiLuna" --class install {' \
+		'    echo "[ GRUB ] Load MiLuna Installer... [ OK ]"' \
+		'    multiboot2 /boot/miluna.elf install' \
+		'    module2 /boot/miluna.elf miluna_payload' \
 		'    boot' \
 		'}' \
 		'' \
@@ -175,7 +175,7 @@ $(ISO): $(KERNEL) $(INITRD)
 	total=$$(cat $$WORK/*.EFI | wc -c); \
 	mb=$$(( total / 1048576 + 4 )); \
 	truncate -s $${mb}M $$WORK/efi.img; \
-	mkfs.vfat -n MIUX_EFI $$WORK/efi.img >/dev/null; \
+	mkfs.vfat -n MILUNA_EFI $$WORK/efi.img >/dev/null; \
 	mmd -i $$WORK/efi.img ::/EFI ::/EFI/BOOT; \
 	for f in $$WORK/*.EFI; do mcopy -i $$WORK/efi.img $$f ::/EFI/BOOT/$$(basename $$f); done; \
 	xorriso -as mkisofs -r -J -V ISOIMAGE \
@@ -221,16 +221,16 @@ run-fat32-gdb: $(ISO)
 
 fat32-disk:
 	dd if=/dev/zero of=fat32.img bs=1M count=100
-	mkfs.vfat -F 32 -n "MIUXFAT" fat32.img
+	mkfs.vfat -F 32 -n "MILUNAFAT" fat32.img
 	@echo "  FAT32 disk created: fat32.img"
 
 fat32-disk-test: fat32-disk
 	mkdir -p /tmp/fat32mnt
 	sudo mount -o loop fat32.img /tmp/fat32mnt
-	sudo bash -c 'echo "MiUX Kernel v1.0" > /tmp/fat32mnt/readme.txt'
-	sudo bash -c 'echo "Hello from MiUX!" > /tmp/fat32mnt/hello.txt'
-	sudo mkdir -p /tmp/fat32mnt/miux /tmp/fat32mnt/boot /tmp/fat32mnt/system /tmp/fat32mnt/usr /tmp/fat32mnt/home
-	sudo bash -c 'echo "config" > /tmp/fat32mnt/miux/config.cfg'
+	sudo bash -c 'echo "MiLuna 1.0.0" > /tmp/fat32mnt/readme.txt'
+	sudo bash -c 'echo "Hello from MiLuna!" > /tmp/fat32mnt/hello.txt'
+	sudo mkdir -p /tmp/fat32mnt/miluna /tmp/fat32mnt/boot /tmp/fat32mnt/system /tmp/fat32mnt/usr /tmp/fat32mnt/home
+	sudo bash -c 'echo "config" > /tmp/fat32mnt/miluna/config.cfg'
 	sudo bash -c 'echo "boot"   > /tmp/fat32mnt/boot/boot.cfg'
 	sudo bash -c 'echo "system" > /tmp/fat32mnt/system/system.cfg'
 	sudo bash -c 'echo "user data" > /tmp/fat32mnt/home/user.txt'

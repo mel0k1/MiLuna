@@ -563,7 +563,7 @@ unsafe fn build_prompt() -> &'static str {
         }
     }
     let mut n = 0usize;
-    put(b"miux-", &mut n);
+    put(b"miluna-", &mut n);
     let user = if users::is_logged_in() { users::get_current_username() } else { "kernel" };
     put(clip(user, 24).as_bytes(), &mut n);
     put(b":", &mut n);
@@ -588,7 +588,7 @@ unsafe fn build_prompt() -> &'static str {
         }
     }
     put(b"~# ", &mut n);
-    core::str::from_utf8(&PROMPT[..n]).unwrap_or("miux-kernel:~# ")
+    core::str::from_utf8(&PROMPT[..n]).unwrap_or("miluna-kernel:~# ")
 }
 
 

@@ -15,9 +15,9 @@ input{padding:6px;}
 <body>
 <div class="stage">
 <h2 style="left:0px;top:0px;color:#1f2a3f;font-weight:bold;">Отказанно в доступе</h2>
-<p style="left:0px;top:47px;color:#1f2a3f;font-weight:normal;">Файл &quot;MiUX.ELF&quot; невозможно удолить так как</p>
+<p style="left:0px;top:47px;color:#1f2a3f;font-weight:normal;">Файл &quot;MiLuna.ELF&quot; невозможно удолить так как</p>
 <p style="left:0px;top:82px;color:#1f2a3f;font-weight:normal;">он является системным файлом ОС</p>
-<p style="left:0px;top:152px;color:#ff0000;font-weight:600;">Error delete MiUX.ELF</p>
+<p style="left:0px;top:152px;color:#ff0000;font-weight:600;">Error delete MiLuna.ELF</p>
 <hr style="left:0px;top:119px;width:200px;">
 </div>
 </body>

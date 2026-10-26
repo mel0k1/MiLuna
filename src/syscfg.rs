@@ -266,7 +266,7 @@ fn load_shortcuts(text: &str) {
 
 fn render(s: &Settings) -> String {
     let mut out = format!(
-        "# MiUX system settings.\n\
+        "# MiLuna system settings.\n\
          wallpaper_color={:06X}\n\
          use_bmp_wallpaper={}\n\
          bmp_wallpaper={}\n\

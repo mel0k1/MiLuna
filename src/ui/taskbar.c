@@ -29,7 +29,7 @@ void ui_draw_taskbar(const ui_window *wins, int n, int menu_open, const u8 *cloc
 
     if (menu_open) ui_sunken(START_X, y + 2, START_W, 26);
     else ui_raised(START_X, y + 2, START_W, 26);
-    miux_ui_text(START_X + (START_W - 40) / 2, y + 7, (const u8 *)"Start", 5, ui_t.button_text, ui_t.button_face);
+    miluna_ui_text(START_X + (START_W - 40) / 2, y + 7, (const u8 *)"Start", 5, ui_t.button_text, ui_t.button_face);
 
     for (int i = 0; i < n; i++) {
         int bx = button_x(i, clock_len);
@@ -42,12 +42,12 @@ void ui_draw_taskbar(const ui_window *wins, int n, int menu_open, const u8 *cloc
     int lx = lang_x(clock_len);
     if (lx >= 0) {
         ui_raised(lx, y + 3, LANG_W, 24);
-        miux_ui_text(lx + (LANG_W - 16) / 2, y + 7, (const u8 *)(miux_ui_lang() ? "RU" : "EN"), 2, ui_t.button_text, ui_t.button_face);
+        miluna_ui_text(lx + (LANG_W - 16) / 2, y + 7, (const u8 *)(miluna_ui_lang() ? "RU" : "EN"), 2, ui_t.button_text, ui_t.button_face);
     }
 
     int cx = clock_x(clock_len);
     ui_raised(cx, y + 3, clock_w(clock_len), 24);
-    miux_ui_text(cx + 8, y + 7, clock, clock_len, ui_t.button_text, ui_t.button_face);
+    miluna_ui_text(cx + 8, y + 7, clock, clock_len, ui_t.button_text, ui_t.button_face);
 }
 
 int ui_taskbar_hit(const ui_window *wins, int n, int px, int py, usize clock_len) {
@@ -115,7 +115,7 @@ void ui_draw_start_menu(void) {
         ui_frame(x, y, w, h, ui_rgb(70, 70, 70));
         ui_fill(x + 1, y + 1, w - 2, 27, ui_rgb(55, 55, 55));
         u32 hc = ui_rgb(200, 200, 200);
-        miux_ui_text(x + 12, y + 6, (const u8 *)"Applications", 12, hc, hc);
+        miluna_ui_text(x + 12, y + 6, (const u8 *)"Applications", 12, hc, hc);
         ui_hline(x + 8, y + 30, w - 16, ui_rgb(70, 70, 70));
         for (int i = 0; i < MENU_ITEMS; i++) {
             int iy = item_top(i) + 2;

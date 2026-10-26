@@ -15,9 +15,9 @@ input{padding:6px;}
 <body>
 <div class="stage">
 <h2 style="left:0px;top:0px;color:#1f2a3f;font-weight:bold;">Отказанно в доступе</h2>
-<p style="left:0px;top:47px;color:#1f2a3f;font-weight:normal;">Папку &quot;Disk 1:/MiUX&quot; невозможно удолить так как</p>
+<p style="left:0px;top:47px;color:#1f2a3f;font-weight:normal;">Папку &quot;Disk 1:/MiLuna&quot; невозможно удолить так как</p>
 <p style="left:0px;top:82px;color:#1f2a3f;font-weight:normal;">она является системным каталогом ОС</p>
-<p style="left:0px;top:152px;color:#ff0000;font-weight:600;">Error delete &quot;Disk 1:/MiUX/&quot;</p>
+<p style="left:0px;top:152px;color:#ff0000;font-weight:600;">Error delete &quot;Disk 1:/MiLuna/&quot;</p>
 <hr style="left:0px;top:119px;width:200px;">
 </div>
 </body>

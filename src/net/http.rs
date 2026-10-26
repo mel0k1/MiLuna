@@ -224,7 +224,7 @@ fn user_agent(host: &str) -> &'static str {
     if host == "google.com" || host.ends_with(".google.com") || host.starts_with("google.") || host.contains(".google.") {
         "Lynx/2.9.0dev.12 libwww-FM/2.14 SSL-MM/1.4.1 OpenSSL/3.0.13"
     } else {
-        "Mozilla/5.0 (X11; MiUX x86_64) MiUXBrowser/1.0 (KHTML, like Gecko)"
+        "Mozilla/5.0 (X11; MiLuna x86_64) MiLunaBrowser/1.0 (KHTML, like Gecko)"
     }
 }
 

@@ -1144,7 +1144,7 @@ fn draw_text_console(gfx: &mut Graphics) {
     unsafe {
         if !LOGGED_IN {
             let u = core::str::from_utf8(&LOGIN_USERNAME_INPUT[..LOGIN_USERNAME_LEN]).unwrap_or("");
-            live.push(alloc::format!("miux login: {}", u));
+            live.push(alloc::format!("miluna login: {}", u));
             if LOGIN_IS_PASSWORD {
                 live.push(alloc::string::String::from("Password: "));
             }
@@ -1745,10 +1745,10 @@ fn tech_info_lines() -> alloc::vec::Vec<alloc::string::String> {
     let mut v: alloc::vec::Vec<String> = alloc::vec::Vec::new();
     unsafe {
         let user = users::get_current_username();
-        v.push(format!("{}@miux", user));
+        v.push(format!("{}@miluna", user));
         v.push(String::from("---------------------"));
-        v.push(String::from("OS: MiUX 7.0.0"));
-        v.push(String::from("Kernel: MiUX 7.0.0 x86_64"));
+        v.push(String::from("OS: MiLuna 1.0.0"));
+        v.push(String::from("Kernel: MiLuna 1.0.0 (MiUx base) x86_64"));
         v.push(String::from("Desktop: MiDE v5.3"));
 
         let host = TECH_HOST.as_str().trim();
@@ -2576,7 +2576,7 @@ fn fm_item_path(name: &str, out: &mut [u8; syscfg::SHORTCUT_PATH_MAX]) -> Option
 
 fn fm_is_sys_folder(e: &fs::fat32::FsEntry) -> bool {
     unsafe {
-        e.is_dir && FM_VIEW.depth == 0 && e.name[..e.name_len].eq_ignore_ascii_case(b"MiUX")
+        e.is_dir && FM_VIEW.depth == 0 && e.name[..e.name_len].eq_ignore_ascii_case(b"MiLuna")
     }
 }
 
@@ -2591,10 +2591,10 @@ fn fm_try_protect(wm: &mut WindowManager) -> bool {
         }
         let name = &FM_CTX_NAME[..FM_CTX_LEN];
         let depth = FM_VIEW.depth;
-        let in_sys = depth >= 1 && FM_VIEW.names[1][..FM_VIEW.name_len[1]].eq_ignore_ascii_case(b"MiUX");
-        let rule = if depth == 0 && name.eq_ignore_ascii_case(b"MiUX") {
+        let in_sys = depth >= 1 && FM_VIEW.names[1][..FM_VIEW.name_len[1]].eq_ignore_ascii_case(b"MiLuna");
+        let rule = if depth == 0 && name.eq_ignore_ascii_case(b"MiLuna") {
             "dir.mp"
-        } else if depth == 1 && in_sys && name.eq_ignore_ascii_case(b"MIUX.ELF") {
+        } else if depth == 1 && in_sys && name.eq_ignore_ascii_case(b"MILUNA.ELF") {
             "mas.mp"
         } else if depth == 1 && in_sys && name.eq_ignore_ascii_case(syscfg::FILE_NAME.as_bytes()) {
             "cfg.mp"
@@ -2606,7 +2606,7 @@ fn fm_try_protect(wm: &mut WindowManager) -> bool {
             return false;
         };
         let mut path = [0u8; 32];
-        let pre = b"/MiUX/ryles/";
+        let pre = b"/MiLuna/ryles/";
         path[..pre.len()].copy_from_slice(pre);
         path[pre.len()..pre.len() + rule.len()].copy_from_slice(rule.as_bytes());
         let p = core::str::from_utf8(&path[..pre.len() + rule.len()]).unwrap_or("");
@@ -3232,7 +3232,7 @@ fn show_blue_screen_of_death(gfx: &mut Graphics) -> ! {
     let screen_w = gfx.width;
     let screen_h = gfx.height;
 
-    let title = "Setop MiUX!";
+    let title = "Setop MiLuna!";
     let title_width = title.len() * tamzen_font::FONT_WIDTH;
     let title_x = (screen_w - title_width) / 2;
     let title_y = screen_h / 2 - 60;
@@ -3306,7 +3306,7 @@ fn draw_tutorial_window(gfx: &mut Graphics) {
 
         let title_bar_h = 30;
         gfx.fill_rect(win_x + 2, win_y + 2, win_w - 4, title_bar_h, Color::rgb(90, 90, 90).to_u32());
-        gfx.draw_text(win_x + 10, win_y + 8, "Welcome to MiUX!", Color::WHITE.to_u32(), Color::rgb(90, 90, 90).to_u32());
+        gfx.draw_text(win_x + 10, win_y + 8, "Welcome to MiLuna!", Color::WHITE.to_u32(), Color::rgb(90, 90, 90).to_u32());
 
         wm::draw_raised_rect(gfx, win_x + win_w - 25, win_y + 5, 20, 20);
         gfx.draw_text(win_x + win_w - 19, win_y + 9, "X", Color::BLACK.to_u32(), Color::rgb(212, 208, 200).to_u32());
@@ -3512,7 +3512,7 @@ fn draw_login_window(gfx: &mut Graphics) {
 
     let title_bar_h = 40;
     gfx.fill_rect(login_x + 2, login_y + 2, login_w - 4, title_bar_h, Color::rgb(70, 70, 70).to_u32());
-    gfx.draw_text(login_x + 20, login_y + 12, "Login to MiUX beta", Color::WHITE.to_u32(), Color::rgb(70, 70, 70).to_u32());
+    gfx.draw_text(login_x + 20, login_y + 12, "Login to MiLuna", Color::WHITE.to_u32(), Color::rgb(70, 70, 70).to_u32());
 
     let fields_y = login_y + 60;
 
@@ -4506,7 +4506,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
             let mut vga = crate::vga::VGA::new();
             vga.clear();
-            vga.write_string("MiUX booting...\n");
+            vga.write_string("MiLuna booting...\n");
             vga.write_string("Initializing VESA framebuffer...\n");
 
             gfx.clear(Color::rgb(0, 0, 0).to_u32());
@@ -4621,7 +4621,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
             let logo_y = 60;
 
-            gfx.draw_text((screen_w - 100) / 2 + 15, logo_y + 90, "MiUX", Color::rgb(252, 255, 252).to_u32(), Color::BLACK.to_u32());
+            gfx.draw_text((screen_w - 100) / 2 + 15, logo_y + 90, "MiLuna", Color::rgb(252, 255, 252).to_u32(), Color::BLACK.to_u32());
 
             let bar_width = 400;
             let bar_height = 20;
@@ -4738,7 +4738,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             "new" => part_count >= 2 && parts[1] == "folder",
                             "support" | "help-center" | "support-center" | "media" | "cre-tool"
                             | "tutorial" | "browser" | "web" | "net" | "network" | "wifi"
-                            | "miux/grap/wm2.rs" => true,
+                            | "miluna/grap/wm2.rs" => true,
                             _ => false,
                         };
                         if needs_gui {
@@ -4886,7 +4886,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                 }
 
                 if part_count >= 2 && parts[0] == "/start" && parts[1] == "--inf" {
-                    return "Available apps for /start:\n  gl /start        - 3D gear visualization\n  task /start      - Task Manager\n  calendar /start  - Calendar with BIOS date/time\n  html /start      - HTML4 Viewer\n  support          - MiUX Support Center\n  media            - BMP image viewer\n  cre-tool         - Graphical app builder\n  notepad /start   - Notepad (only inside GUI: gui /start --all)\n  call <app>       - Run any registered app (list-apps)";
+                    return "Available apps for /start:\n  gl /start        - 3D gear visualization\n  task /start      - Task Manager\n  calendar /start  - Calendar with BIOS date/time\n  html /start      - HTML4 Viewer\n  support          - MiLuna Support Center\n  media            - BMP image viewer\n  cre-tool         - Graphical app builder\n  notepad /start   - Notepad (only inside GUI: gui /start --all)\n  call <app>       - Run any registered app (list-apps)";
                 }
 
                 if part_count >= 2 && (parts[0] == "task" || parts[0] == "taskmgr") {
@@ -4941,7 +4941,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
                 if trimmed == "support" || trimmed == "help-center" || trimmed == "support-center" {
                     unsafe { SUPPORT_WINDOW_REQUESTED = true; }
-                    return "Opening MiUX Support Center...";
+                    return "Opening MiLuna Support Center...";
                 }
 
                 if part_count >= 2 && parts[0] == "pc" && parts[1] == "--info" {
@@ -4964,7 +4964,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                                     return "WARNING: this will ERASE ALL DATA on the disk!\nTo confirm type: format <disk_number> /y";
                                 }
                                 let idx = disk_num - 1;
-                                return match fs::fat32::format(idx, "MIUX") {
+                                return match fs::fat32::format(idx, "MILUNA") {
                                     Ok(()) => {
                                         FAT32_MOUNTED[idx] = false;
                                         FAT32_FILESYSTEMS[idx] = None;
@@ -5021,14 +5021,14 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                 }
 
                 match trimmed {
-                    "help" => "  System:        ver, uptime, mem, about, tech, kernel\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiUX Support Center\n  MiDE Settings: miux/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)",
-                    "ver" => "MiUX 7.0.0",
+                    "help" => "  System:        ver, uptime, mem, about, tech, kernel\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)",
+                    "ver" => "MiLuna 1.0.0",
                     "mem" => "Memory: 4096 MB",
                     "uptime" => "Uptime: 0 ticks",
                     "dice" => "Dice: 4",
                     "fs" => "FAT32",
                     "tutorial" => open_tutorial(),
-                    "miux/grap/wm2.rs" => switch_to_wm2_theme(),
+                    "miluna/grap/wm2.rs" => switch_to_wm2_theme(),
                     "ata" => {
                         if unsafe { ATA_MOUNTED } {
                             "ATA drive is mounted!"
@@ -5037,15 +5037,15 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         }
                     },
                     "atals" => list_ata_files(),
-                    "devs" => "MiUX Developers: MDEVS",
-                    "developers" => "MiUX Developers: MDEVS",
-                    "kernel" => "MiUX KERNEL:\nFILES KERNEL: lib.rs , wm.rs , mide.rs\nKERNEL BILDER: Mikhail\nKERNEL VER: MiUX 7.0.0\nMade in 2026",
-                    "mide" => "\nmmmmmmmmmmmmmmmmmmmmmmm          MiDE 5.4\nm MiDE         _ O X  m          MiDE FULL version: 5.3 \nmmmmmmmmmmmmmmmmmmmmmmm          MiUX Version: 7.0.0\nm                     m          Kernel MiDE: ver1.0\nm                     m          made in 2026\nm                     m          MiDE by MDEVS (C)\nmmmmmmmmmmmmmmmmmmmmmmm",
+                    "devs" => "MiLuna 1.0.0 by mel0k1\nBase kernel: MiUx 7.0.0 by MDEVS",
+                    "developers" => "MiLuna 1.0.0 by mel0k1\nBase kernel: MiUx 7.0.0 by MDEVS",
+                    "kernel" => "MILUNA KERNEL:\nBASE: MiUx 7.0.0 by MDEVS (Mikhail)\nDISTRO: MiLuna 1.0.0 by mel0k1\nCORE FILES: lib.rs, wm.rs, cui.rs\nMade in 2026",
+                    "mide" => "\nmmmmmmmmmmmmmmmmmmmmmmm          MiDE 5.4\nm MiDE         _ O X  m          MiDE FULL version: 5.3 \nmmmmmmmmmmmmmmmmmmmmmmm          MiLuna Version: 1.0.0\nm                     m          Kernel MiDE: ver1.0\nm                     m          made in 2026\nm                     m          MiDE by MDEVS (C)\nmmmmmmmmmmmmmmmmmmmmmmm",
                     "cls" => "\x04",
                     "clear" => "\x04",
-                    "about" => "MiUX 7.0.0 Made in 2026 :)",
+                    "about" => "MiLuna 1.0.0\nDistro on MiUx kernel\nby mel0k1 2026",
                     "tech" => "\x0E",
-                    "dir" => "\nC:/MiUX/\nkernel.bin - lib.rs\nmouse.rs - mouse USB\nvm.rs - MiDE 5.4\nvga.rs - vga mode\nbmp.rs - bmp img system\nfs>\n   ext4.rs\n   mod.rs\n   tar.rs",
+                    "dir" => "\nC:/MiLuna/\nkernel.bin - lib.rs\nmouse.rs - mouse USB\nvm.rs - MiDE 5.4\nvga.rs - vga mode\nbmp.rs - bmp img system\nfs>\n   ext4.rs\n   mod.rs\n   tar.rs",
                     "stop gui" => "Access error",
                     "del ram" => "Access error",
                     "new folder" => "\x07",
@@ -5437,18 +5437,18 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                                 }
                                 let info_y = img_y + bmp.height + 20;
                                 gfx.draw_text(cx + 10, info_y, "", Color::BLACK.to_u32(), t.window_bg.to_u32());
-                                gfx.draw_text(cx + 10, info_y + 20, "MiUX 7.0.0 system", Color::BLACK.to_u32(), t.window_bg.to_u32());
+                                gfx.draw_text(cx + 10, info_y + 20, "MiLuna 1.0.0", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, info_y + 40, "Created in 2026", Color::BLACK.to_u32(), t.window_bg.to_u32());
-                                gfx.draw_text(cx + 10, info_y + 60, "Site: https://p.miux.phoneget.top", Color::BLACK.to_u32(), t.window_bg.to_u32());
+                                gfx.draw_text(cx + 10, info_y + 60, "Site: https://github.com/mel0k1/MiLuna", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, info_y + 80, "Creators: MDEVS (c)", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, info_y + 100, "This version is copyrighted", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, info_y + 140, "", Color::BLACK.to_u32(), t.window_bg.to_u32());
                             } else {
-                                gfx.draw_text(cx + 10, cy + 10, "About MiUX system", Color::BLACK.to_u32(), t.window_bg.to_u32());
+                                gfx.draw_text(cx + 10, cy + 10, "About MiLuna system", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, cy + 30, "", Color::BLACK.to_u32(), t.window_bg.to_u32());
-                                gfx.draw_text(cx + 10, cy + 50, "MiUX 7.0.0 system", Color::BLACK.to_u32(), t.window_bg.to_u32());
+                                gfx.draw_text(cx + 10, cy + 50, "MiLuna 1.0.0", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, cy + 70, "Created in 2026", Color::BLACK.to_u32(), t.window_bg.to_u32());
-                                gfx.draw_text(cx + 10, cy + 90, "Site: https://p.miux.phoneget.top", Color::BLACK.to_u32(), t.window_bg.to_u32());
+                                gfx.draw_text(cx + 10, cy + 90, "Site: https://github.com/mel0k1/MiLuna", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, cy + 110, "Creators: MDEVS (c)", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, cy + 130, "This version is copyrighted", Color::BLACK.to_u32(), t.window_bg.to_u32());
                                 gfx.draw_text(cx + 10, cy + 170, "", Color::BLACK.to_u32(), t.window_bg.to_u32());
@@ -5772,7 +5772,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                                     let nm = core::str::from_utf8(&en.1.name[..en.1.name_len]).unwrap_or("?");
                                     gfx.draw_text(cx + 20, y_pos + 4, nm, Color::BLACK.to_u32(), t.button_face.to_u32());
                                     if DWP_SYS != 0 && en.0 == DWP_SYS {
-                                        gfx.draw_text(cx + 200, y_pos + 4, "[MiUX]", Color::rgb(90, 90, 90).to_u32(), t.button_face.to_u32());
+                                        gfx.draw_text(cx + 200, y_pos + 4, "[MiLuna]", Color::rgb(90, 90, 90).to_u32(), t.button_face.to_u32());
                                     }
                                 }
                                 let by = cy + 30 + DWP_ROWS * 26 + 4;
@@ -5862,7 +5862,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             }
 
                             let small_y = start_y + 8 * scale + 20;
-                            gfx.draw_text(cx + 10, small_y, "Miux 64 bit time", Color::rgb(150, 150, 150).to_u32(), Color::rgb(20, 20, 30).to_u32());
+                            gfx.draw_text(cx + 10, small_y, "MiLuna 64 bit time", Color::rgb(150, 150, 150).to_u32(), Color::rgb(20, 20, 30).to_u32());
                             gfx.draw_text(cx + 10, small_y + 20, time_str, Color::rgb(200, 200, 200).to_u32(), Color::rgb(20, 20, 30).to_u32());
                         }
                         "Notepad" => {
@@ -5928,7 +5928,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             draw_ext4_window_content(gfx, cx, cy, win.width - 4, win.height - 28);
                         }
                         "About FileMGR" => {
-                            gfx.draw_text(cx + 20, cy + 40, "File MGR MiUX 7.0.0", Color::BLACK.to_u32(), t.window_bg.to_u32());
+                            gfx.draw_text(cx + 20, cy + 40, "File MGR MiLuna 1.0.0", Color::BLACK.to_u32(), t.window_bg.to_u32());
                             gfx.draw_text(cx + 20, cy + 68, "By Mikhail", Color::BLACK.to_u32(), t.window_bg.to_u32());
                         }
                         "About Files" => {
@@ -5938,7 +5938,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             gfx.draw_text(cx + 10, cy + 70, "Created by Mikhail", Color::BLACK.to_u32(), t.window_bg.to_u32());
                             gfx.draw_text(cx + 10, cy + 90, "Year: 2026", Color::BLACK.to_u32(), t.window_bg.to_u32());
                             gfx.draw_text(cx + 10, cy + 110, "=======================", Color::BLACK.to_u32(), t.window_bg.to_u32());
-                            gfx.draw_text(cx + 10, cy + 130, "MiUX 7.0.0", Color::BLACK.to_u32(), t.window_bg.to_u32());
+                            gfx.draw_text(cx + 10, cy + 130, "MiLuna 1.0.0", Color::BLACK.to_u32(), t.window_bg.to_u32());
                         }
                         "Task Manager" => {
                             task_manager::draw_task_manager(gfx, cx, cy, win.width - 4, win.height - 28);
@@ -6280,7 +6280,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             }
 
             fn text_banner() {
-                push_history("MiUX 7.0.0");
+                push_history("MiLuna 1.0.0");
                 push_history("Text mode. Please log in.");
                 push_history("(after login: 'gui /start --all' starts the graphical mode)");
                 push_history("");
@@ -6593,7 +6593,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                                                     &uname,
                                                     core::str::from_utf8(&LOGIN_PASSWORD_INPUT[..LOGIN_PASSWORD_LEN]).unwrap_or("")
                                                 );
-                                                push_history(&alloc::format!("miux login: {}", uname));
+                                                push_history(&alloc::format!("miluna login: {}", uname));
                                                 push_history("Password: ");
                                                 LOGIN_PASSWORD_INPUT = [0; 32];
                                                 LOGIN_PASSWORD_LEN = 0;
@@ -6847,13 +6847,13 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                                                     let out = exec_command(cmd);
                                                     if out == "\x04" {
                                                         clear_history();
-                                                        push_history("miux@system:~$ cls");
+                                                        push_history("miluna@system:~$ cls");
                                                     } else if out == "\x05" {
                                                         show_blue_screen_of_death(&mut gfx);
                                                     } else if out == "\x06" {
                                                         show_blue_screen_stop_gui(&mut gfx);
                                                     } else if out == "\x0E" {
-                                                        push_history("miux@system:~$ ");
+                                                        push_history("miluna@system:~$ ");
                                                         push_history(cmd);
                                                         let rows = tech_info_lines();
                                                         for (k, row) in rows.iter().enumerate() {
@@ -6865,10 +6865,10 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                                                         }
                                                     } else if out == "\x07" {
                                                         create_folder_on_desktop("Folder");
-                                                        push_history("miux@system:~$ new folder");
+                                                        push_history("miluna@system:~$ new folder");
                                                         push_history("Folder created on desktop");
                                                     } else {
-                                                        push_history("miux@system:~$ ");
+                                                        push_history("miluna@system:~$ ");
                                                         if !cmd.is_empty() {
                                                             push_history(cmd);
                                                             if !out.is_empty() {

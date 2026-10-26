@@ -939,7 +939,7 @@ pub fn handle_html_click(
                 app.status[..p].copy_from_slice(&buf[..p]);
                 app.status_len = p;
             } else if label.eq_ignore_ascii_case("Hello") || label.eq_ignore_ascii_case("Say Hello") {
-                set_status(app, "Hello from MiUX!");
+                set_status(app, "Hello from MiLuna!");
             } else {
                 let mut buf = [0u8; 128];
                 let mut p = 0;

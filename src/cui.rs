@@ -69,12 +69,12 @@ static mut GFX: *mut Graphics = core::ptr::null_mut();
 static mut SCREEN: (usize, usize) = (0, 0);
 
 #[no_mangle]
-pub extern "C" fn miux_ui_lang() -> i32 {
+pub extern "C" fn miluna_ui_lang() -> i32 {
     if unsafe { crate::web::keys::RUSSIAN } { 1 } else { 0 }
 }
 
 #[no_mangle]
-pub extern "C" fn miux_ui_text(x: i32, y: i32, s: *const u8, len: usize, fg: u32, bg: u32) {
+pub extern "C" fn miluna_ui_text(x: i32, y: i32, s: *const u8, len: usize, fg: u32, bg: u32) {
     unsafe {
         if GFX.is_null() || s.is_null() || x < 0 || y < 0 { return; }
         let bytes = core::slice::from_raw_parts(s, len);

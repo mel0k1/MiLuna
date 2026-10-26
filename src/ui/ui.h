@@ -1,5 +1,5 @@
-#ifndef MIUX_UI_H
-#define MIUX_UI_H
+#ifndef MILUNA_UI_H
+#define MILUNA_UI_H
 
 typedef unsigned int u32;
 typedef unsigned char u8;
@@ -49,8 +49,8 @@ void ui_draw_start_menu(void);
 int  ui_start_menu_contains(int px, int py);
 int  ui_start_menu_item(int px, int py);
 
-extern void miux_ui_text(int x, int y, const u8 *s, usize len, u32 fg, u32 bg);
-extern int miux_ui_lang(void);
+extern void miluna_ui_text(int x, int y, const u8 *s, usize len, u32 fg, u32 bg);
+extern int miluna_ui_lang(void);
 
 extern u32 *ui_bb;
 extern int ui_w, ui_h;

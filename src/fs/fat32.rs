@@ -1496,7 +1496,7 @@ pub unsafe fn load_file(name: &str, out: &mut [u8]) -> Result<usize, &'static st
 }
  
 
-pub const SYS_DIR: &str = "MiUX";
+pub const SYS_DIR: &str = "MiLuna";
 
 fn dir_cluster(fs: &FAT32FS, name: &str, create: bool) -> Result<u32, &'static str> {
     let short = match make_dir_name(name) {
