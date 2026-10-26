@@ -5,18 +5,24 @@ INITRD  = initrd.tar
 CARGO   = cargo +nightly
 VGA    ?= std
 
-LLD := $(shell which ld.lld 2>/dev/null || echo $(HOME)/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/ld.lld)
+LLD := $(shell which ld.lld 2>/dev/null)
+ifeq ($(LLD),)
+LLD := $(HOME)/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld
+LLD_FLAVOR := -flavor gnu
+endif
 
 GRUB_MODULES = biosdisk part_msdos part_gpt iso9660 normal \
                multiboot multiboot2 elf configfile \
-               all_video vbe vga gfxterm font \
+               all_video vbe vga gfxterm font png \
                echo test sleep halt reboot serial
 
-GRUB_X64_EFI  = /usr/lib/grub/x86_64-efi
-GRUB_IA32_EFI = /usr/lib/grub/i386-efi
+GRUB_X64_EFI  ?= /usr/lib/grub/x86_64-efi
+GRUB_IA32_EFI ?= /usr/lib/grub/i386-efi
+GRUB_I386     ?= /usr/lib/grub/i386-pc
+GRUB_FONTS    ?= /usr/share/grub
 GRUB_EFI_MODULES = part_gpt part_msdos fat iso9660 normal configfile boot \
                    multiboot multiboot2 elf all_video video video_fb efi_gop \
-                   gfxterm font echo test sleep halt reboot serial \
+                   gfxterm font png echo test sleep halt reboot serial \
                    search search_fs_file search_fs_uuid
 
 .PHONY: all clean run setup help fat32-disk fat32-disk-test run-fat32 run-fat32-debug check-deps
@@ -60,8 +66,6 @@ target/ui/%.o: src/ui/%.c src/ui/ui.h
 	@mkdir -p target/ui
 	$(CC) $(UI_CFLAGS) -c $< -o $@
 
-GRUB_I386 = /usr/lib/grub/i386-pc
-
 target/grub_boot.img: $(GRUB_I386)/boot.img
 	@mkdir -p target
 	cp $< $@
@@ -89,7 +93,7 @@ target/$(TARGET)/release/libmiluna.a: FORCE target/grub_boot.img target/grub_cor
 FORCE:
 
 $(KERNEL): target/boot.o $(UI_OBJ) target/$(TARGET)/release/libmiluna.a linker.ld
-	$(LLD) -T linker.ld -o $@ \
+	$(LLD) $(LLD_FLAVOR) -T linker.ld -o $@ \
 		target/boot.o \
 		$(UI_OBJ) \
 		target/$(TARGET)/release/libmiluna.a \
@@ -102,8 +106,8 @@ $(ISO): $(KERNEL) $(INITRD)
 	@mkdir -p iso/boot/grub/fonts iso/miluna
 	cp $(KERNEL) iso/boot/miluna.elf
 	cp $(INITRD) iso/boot/initrd.tar
-	@if [ -f /usr/share/grub/unicode.pf2 ]; then \
-		cp /usr/share/grub/unicode.pf2 iso/boot/grub/fonts/; \
+	@if [ -f $(GRUB_FONTS)/unicode.pf2 ]; then \
+		cp $(GRUB_FONTS)/unicode.pf2 iso/boot/grub/fonts/; \
 	fi
 	@if [ -f background.png ]; then cp background.png iso/boot/grub/background.png; fi
 
@@ -114,7 +118,7 @@ $(ISO): $(KERNEL) $(INITRD)
 	@echo "verbose=true">> iso/miluna/debug.cfg
 
 	@printf '%s\n' \
-		'set timeout=15' \
+		'set timeout=5' \
 		'set timeout_style=menu' \
 		'set default=0' \
 		'' \
@@ -122,6 +126,7 @@ $(ISO): $(KERNEL) $(INITRD)
 		'    set gfxmode=1920x1080x24,1920x1080,auto' \
 		'    set gfxpayload=keep' \
 		'    terminal_output gfxterm' \
+		'    background_image /boot/grub/background.png' \
 		'fi' \
 		'' \
 		'echo "[BOOT] Welcome to GRUB!"' \
