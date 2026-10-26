@@ -6,7 +6,7 @@
 
 **Дистрибутив операционной системы для x86_64 на ядре [MiUx](https://github.com/mel0k1/MiLuna) 7.0.0**
 
-Rust-ядро · оконный менеджер на C · GRUB 2 · браузер · сеть · FAT32
+Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · браузер · сеть · FAT32
 
 ![CI](https://github.com/mel0k1/MiLuna/actions/workflows/build.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
@@ -28,6 +28,8 @@ Rust-ядро · оконный менеджер на C · GRUB 2 · брауз�
 
 **Ядро и железо**
 - Ядро на Rust (`no_std`), загрузка через GRUB 2 (multiboot2, VBE/VESA 1920x1080)
+- SSE/SSE2 включаются в загрузчике: аппаратная FP-арифметика для браузерного движка и GL, быстрые `memcpy`/`memset`
+- Реальные данные железа: память из memory map multiboot, uptime через TSC
 - Линейный фреймбуфер, частичная перерисовка экрана (fastblit)
 - Клавиатура, мышь (включая колесо), ATA, SATA, ATAPI, PCI
 - Файловые системы: FAT32 (чтение и запись), EXT4 (просмотр), TAR initrd
@@ -49,9 +51,17 @@ Rust-ядро · оконный менеджер на C · GRUB 2 · брауз�
 - HTTP и HTTPS (TLS 1.3), перенаправления, gzip, cookies
 - Собственный браузерный движок: HTML, CSS (селекторы, flex, grid), картинки PNG/JPEG/BMP, формы
 
+## Скриншоты
+
+| | |
+|---|---|
+| ![Терминал с fetch](docs/screenshots/terminal.png) | ![Рабочий стол](docs/screenshots/desktop.png) |
+| ![Task Manager](docs/screenshots/task-manager.png) | ![Календарь](docs/screenshots/calendar.png) |
+| ![PC Info](docs/screenshots/pc-info.png) | ![Notepad](docs/screenshots/notepad.png) |
+
 ## fetch
 
-Традиционный `fetch` с фирменной луной доступен прямо в терминале:
+Традиционный `fetch` с фирменной луной доступен прямо в терминале (uptime и разрешение экрана — настоящие):
 
 ```
 .....................................
@@ -165,8 +175,8 @@ MiLuna/
 
 ## Roadmap
 
-- [ ] Реальные значения `mem` из memory map multiboot
-- [ ] SSE/FPU: включить или перевести ядро на soft-float
+- [x] Реальные значения `mem` из memory map multiboot
+- [x] SSE/SSE2: включены в загрузчике (CR0/CR4) и target features
 - [ ] Постепенный отказ от `static mut` в пользу безопасных абстракций
 - [ ] Сжатие встроенных BMP-ресурсов (сейчас 4+ МБ)
 - [ ] Проверка TLS-сертификатов в HTTPS
