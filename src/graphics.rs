@@ -3,6 +3,7 @@ use core::slice;
 use crate::tamzen_font;
 
 pub static mut BACKBUFFER: [u32; 1920 * 1080] = [0; 1920 * 1080];
+pub static mut FB_INFO: (u64, usize, usize, usize) = (0, 0, 0, 0);
 
 #[derive(Debug, Clone, Copy)]
 pub struct Color {
@@ -36,6 +37,7 @@ impl Graphics {
     pub fn new(addr: u64, width: u32, height: u32, pitch: u32) -> Self {
         let size = (pitch as usize / 4) * height as usize;
         let fb = unsafe { slice::from_raw_parts_mut(addr as *mut u32, size) };
+        unsafe { FB_INFO = (addr, pitch as usize / 4, width as usize, height as usize); }
         Self { fb, width: width as usize, height: height as usize, pitch: pitch as usize }
     }
 

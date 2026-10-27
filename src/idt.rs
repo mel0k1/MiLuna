@@ -119,13 +119,119 @@ gen_stub_error!(isr13, 13);
 gen_stub_error!(isr14, 14);
 gen_stub_error!(isr17, 17);
 
+const EXC_NAMES: [&str; 32] = [
+    "Divide Error", "Debug", "NMI", "Breakpoint", "Overflow", "BOUND Range",
+    "Invalid Opcode", "Device NA", "Double Fault", "Coproc Seg", "Invalid TSS",
+    "Segment Not Present", "Stack Fault", "General Protection", "Page Fault",
+    "Reserved", "x87 FPU", "Alignment Check", "Machine Check", "SIMD FP",
+    "Virt Exception", "Reserved", "Reserved", "Reserved", "Reserved",
+    "Reserved", "Reserved", "Reserved", "Reserved", "Reserved", "Security", "Reserved",
+];
+
+fn panic_put_px(x: usize, y: usize, c: u32) {
+    unsafe {
+        let (addr, stride, w, h) = crate::graphics::FB_INFO;
+        if addr == 0 || x >= w || y >= h { return; }
+        let p = (addr as *mut u32).add(y * stride + x);
+        core::ptr::write_volatile(p, c);
+    }
+}
+
+fn panic_fill(x: usize, y: usize, w: usize, h: usize, c: u32) {
+    for row in 0..h { for col in 0..w { panic_put_px(x + col, y + row, c); } }
+}
+
+fn panic_char(x: usize, y: usize, ch: u8, c: u32) {
+    if ch < 32 || ch > 126 { return; }
+    let base = (ch as usize) * 16;
+    for row in 0..16 {
+        let byte = crate::tamzen_font::FONT[base + row];
+        for col in 0..8 {
+            if byte & (1 << (7 - col)) != 0 { panic_put_px(x + col, y + row, c); }
+        }
+    }
+}
+
+fn panic_text(x: usize, y: usize, s: &str, c: u32) {
+    let mut cx = x;
+    for b in s.bytes() {
+        panic_char(cx, y, b, c);
+        cx += 8;
+        if cx + 8 > 1920 { break; }
+    }
+}
+
+fn panic_hex(x: usize, y: usize, v: u64, c: u32) {
+    const HEX: [u8; 16] = *b"0123456789ABCDEF";
+    let mut buf = [0u8; 16];
+    let mut n = 0usize;
+    if v == 0 { buf[0] = b'0'; n = 1; }
+    else {
+        let mut v = v;
+        while v > 0 && n < 16 { buf[n] = HEX[(v & 0xF) as usize]; v >>= 4; n += 1; }
+    }
+    let mut cx = x;
+    for i in (0..n).rev() { panic_char(cx, y, buf[i], c); cx += 8; }
+}
+
+fn vga_print(s: &[u8], row: u16, col: u16, attr: u8) {
+    let mut c = col;
+    for &b in s {
+        let off = (row * 80 + c) * 2;
+        unsafe {
+            core::ptr::write_volatile((0xB8000 + off as usize) as *mut u8, b);
+            core::ptr::write_volatile((0xB8000 + off as usize + 1) as *mut u8, attr);
+        }
+        c += 1;
+    }
+}
+
+fn kernel_panic(vec: u64, err: u64, sf: &InterruptStackFrame) -> ! {
+    let name = if (vec as usize) < 32 { EXC_NAMES[vec as usize] } else { "Unknown" };
+    unsafe {
+        let (addr, _, w, h) = crate::graphics::FB_INFO;
+        if addr != 0 {
+            let bg = 0xA80000u32;
+            let fg = 0xFFFFFFu32;
+            panic_fill(0, 0, w, h, bg);
+            panic_fill(0, 0, w, 64, 0x600000);
+            panic_text(24, 20, "MiLuna kernel panic", 0xFFD0D0);
+            panic_text(24, 100, "Exception:", fg);
+            panic_text(136, 100, name, fg);
+            panic_text(24, 128, "Vector:", fg);
+            panic_hex(104, 128, vec, fg);
+            panic_text(24, 156, "Error code:", fg);
+            panic_hex(152, 156, err, fg);
+            panic_text(24, 184, "RIP:", fg);
+            panic_hex(72, 184, sf.rip, fg);
+            if vec == 14 {
+                let cr2: u64;
+                core::arch::asm!("mov {}, cr2", out(reg) cr2);
+                panic_text(24, 212, "CR2:", fg);
+                panic_hex(72, 212, cr2, fg);
+            }
+            panic_text(24, 280, "The system has been halted.", fg);
+            panic_text(24, 300, "Please report: github.com/mel0k1/MiLuna", 0xC0C0C0);
+        } else {
+            vga_print(b"MiLuna kernel panic", 0, 0, 0x1F);
+            vga_print(name.as_bytes(), 2, 0, 0x0F);
+        }
+    }
+    loop { unsafe { core::arch::asm!("cli", "hlt"); } }
+}
+
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub extern "x86-interrupt" fn isr_common(_sf: &InterruptStackFrame, _error_code: u64) {
     naked_asm!(
-        "cli",
-        "1: hlt",
-        "jmp 1b",
+        "sub rsp, 8",
+        "mov rdi, rsp",
+        "add rdi, 24",
+        "mov rsi, [rsp + 8]",
+        "mov rdx, [rsp + 16]",
+        "call {panic}",
+        "ud2",
+        panic = sym kernel_panic,
     );
 }
 
