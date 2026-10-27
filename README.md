@@ -37,8 +37,12 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 
 **Графический интерфейс** (`gui /start --all`)
 - Оконный менеджер на C: рамки, тени, свернуть/развернуть/закрыть, панель задач, меню «Пуск», часы
+- Полноценный рабочий стол: обои (BMP), иконки приложений, папки и ярлыки, контекстное меню
+- **Alt+Tab** — переключение окон, **Aero Snap** — перетащите окно к верхнему или боковому краю экрана
+- Подсветка кнопок заголовка при наведении мыши, живые часы в панели задач (RTC)
 - 4 темы: Aero, Basic, Classic, Ubuntu
 - Раскладка EN/RU (`Alt+Shift`), рабочий стол с папками и ярлыками
+- Экран паники ядра с диагнозом исключения (вектор, имя, CR2, RIP) вместо молчаливого зависания
 
 **Приложения**
 - Terminal, Notepad, Paint (сохранение в `.bmp`), File Manager
@@ -55,9 +59,12 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 
 | | |
 |---|---|
-| ![Терминал с fetch](docs/screenshots/terminal.png) | ![Рабочий стол](docs/screenshots/desktop.png) |
-| ![Task Manager](docs/screenshots/task-manager.png) | ![Календарь](docs/screenshots/calendar.png) |
-| ![PC Info](docs/screenshots/pc-info.png) | ![Notepad](docs/screenshots/notepad.png) |
+| ![fetch в терминале](docs/screenshots/terminal.jpg) | ![Рабочий стол](docs/screenshots/desktop.jpg) |
+| ![Aero Snap — превью зоны](docs/screenshots/snap.jpg) | ![Развернутое окно](docs/screenshots/maximized.png) |
+| ![Task Manager](docs/screenshots/task-manager.jpg) | ![Календарь](docs/screenshots/calendar.jpg) |
+| ![PC Info](docs/screenshots/pc-info.jpg) | ![Settings](docs/screenshots/settings.jpg) |
+
+Aero Snap: перетащите окно к верхнему краю — развернётся на весь экран, к левому или правому — займёт половину.
 
 ## fetch
 
@@ -175,8 +182,20 @@ MiLuna/
 
 ## Roadmap
 
-- [x] Реальные значения `mem` из memory map multiboot
+**Готово**
+- [x] Реальные значения `mem` из memory map multiboot, `uptime` через TSC
 - [x] SSE/SSE2: включены в загрузчике (CR0/CR4) и target features
+- [x] Экран паники ядра (вектор, имя исключения, CR2, RIP) вместо `hlt`
+- [x] Полный рабочий стол: панель задач, меню «Пуск», иконки, обои
+- [x] Alt+Tab и Aero Snap (верх/лево/право с превью зоны)
+
+**Дальше**
+- [ ] Ring 3: TSS, `syscall`/`sysret`, пользовательские страницы (U/S), ELF-загрузчик
+- [ ] Вытесняющая многозадачность: PIT/LAPIC-таймер, контекст-свитч из прерывания
+- [ ] SMP: парсинг MADT, INIT-SIPI, per-CPU области, блокировки
+- [ ] NX-бит и защита ядерных страниц
+- [ ] HPET/LAPIC-таймер вместо busy-wait `sleep`, ACPI poweroff
+- [ ] Больше окон одновременно (сейчас 8), damage-tracking во всём композиторе
 - [ ] Постепенный отказ от `static mut` в пользу безопасных абстракций
 - [ ] Сжатие встроенных BMP-ресурсов (сейчас 4+ МБ)
 - [ ] Проверка TLS-сертификатов в HTTPS
