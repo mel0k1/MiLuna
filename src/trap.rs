@@ -55,16 +55,24 @@ pub extern "x86-interrupt" fn syscall_entry(_sf: &crate::idt::InterruptStackFram
 // Fast syscall entry (SYSCALL instruction, MSR-programmed via gdt::init_syscall).
 // On entry: ring 0 on the USER stack, rcx = user rip, r11 = user rflags,
 // rax = syscall number, interrupts already off (SFMASK cleared IF).
-// Builds the same 192-byte TrapFrame the int 0x80 path uses, on the RSP0 area,
-// then dispatches into handle_trap. Returns to ring 3 via SYSRET - unless the
-// scheduler switched to the kernel task, whose frames must return via IRETQ.
+// Builds the same 192-byte TrapFrame the int 0x80 path ends up with, on the
+// task's own kernel stack, then dispatches into handle_trap. Returns to ring 3
+// via SYSRET - unless the scheduler switched to the kernel task, whose frames
+// must return via IRETQ.
 #[unsafe(naked)]
 pub extern "C" fn syscall_fast_entry() {
     naked_asm!(
-        // save user rsp, then move to the RSP0 area: frame occupies top-192..top
+        // save user rsp, then build the frame on the CURRENT TASK'S kernel stack
+        // (kstack_top-192) - never in the RSP0 area: hardware traps push their iret
+        // frame at the RSP0 top, which would corrupt a syscall frame parked there
+        // while the task runs in user mode. r10 holds the Task* (its frame slot
+        // gets the scratch value instead of the user's r10 - caller-clobbered ABI;
+        // r8/r9/r11 stay untouched apart from the hardware rcx/r11 clobber).
         "mov [rip + {scratch}], rsp",
-        "lea rsp, [rip + {rsp0}]",
-        "add rsp, 8128",
+        "mov r10, [rip + {cur_task}]",
+        "mov rsp, [r10]",
+        "sub rsp, 192",
+        "add rsp, 128",
         // 16 pushes land rax at frame+0; rcx/r11 slots get informational values
         "push 0",
         "push r15",
@@ -91,10 +99,8 @@ pub extern "C" fn syscall_fast_entry() {
         "mov rax, [rip + {scratch}]",
         "mov [rsp + 168], rax",
         "mov qword ptr [rsp + 176], {ss3}",
-        // fpu state, Rust handler
-        "mov rax, [rip + {cur_task}]",
-        "mov rax, [rax]",
-        "lea rdi, [rax + 16]",
+        // fpu state (Task+16), Rust handler
+        "lea rdi, [r10 + 16]",
         "fxsave [rdi]",
         "mov rdi, rsp",
         "call {handle}",
@@ -102,9 +108,8 @@ pub extern "C" fn syscall_fast_entry() {
         "jz 2f",
         "mov rsp, rax",
         "2:",
-        "mov rax, [rip + {cur_task}]",
-        "mov rax, [rax]",
-        "lea rdi, [rax + 16]",
+        "mov r10, [rip + {cur_task}]",
+        "lea rdi, [r10 + 16]",
         "fxrstor [rdi]",
         // ring3 target -> sysret; ring0 target (kernel task) -> iretq
         "mov rcx, [rsp + 152]",
@@ -146,7 +151,6 @@ pub extern "C" fn syscall_fast_entry() {
         "add rsp, 144",
         "iretq",
         scratch = sym SYSCALL_SCRATCH,
-        rsp0 = sym crate::gdt::RSP0_STACK,
         cs3 = const 0x23u64,
         ss3 = const 0x1Bu64,
         cur_task = sym crate::task::CUR_TASK,
@@ -250,6 +254,49 @@ pub extern "C" fn trap_common() {
         "mov r15, [rsp + 112]",
         "mov rax, [rsp]",
         "add rsp, 144",
+        // guard: frame.cs must be kernel or user code selector before iretq
+        "mov rcx, [rsp + 8]",
+        "cmp cx, 0x08",
+        "je 9f",
+        "cmp cx, 0x23",
+        "je 9f",
+        "mov rsi, rsp",
+        "sub rsi, 144",
+        "mov rbx, 24",
+        "8:",
+        "mov rax, [rsi]",
+        "mov rcx, 16",
+        "7:",
+        "rol rax, 4",
+        "mov rdx, rax",
+        "and dl, 0x0f",
+        "cmp dl, 10",
+        "jb 6f",
+        "add dl, 39",
+        "6:",
+        "add dl, 48",
+        "push rax",
+        "mov rax, rdx",
+        "mov rdx, 0xe9",
+        "out dx, al",
+        "pop rax",
+        "dec rcx",
+        "jnz 7b",
+        "mov al, 32",
+        "mov rdx, 0xe9",
+        "out dx, al",
+        "add rsi, 8",
+        "dec rbx",
+        "jnz 8b",
+        "mov al, 84",
+        "mov rdx, 0xe9",
+        "out dx, al",
+        "mov al, 10",
+        "out dx, al",
+        "cli",
+        "hlt",
+        "jmp 8b",
+        "9:",
         "iretq",
         cur_task = sym crate::task::CUR_TASK,
         rsp0 = sym crate::gdt::RSP0_STACK,

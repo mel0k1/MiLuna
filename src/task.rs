@@ -29,6 +29,19 @@ pub const ST_DEAD: u8 = 3;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_YIELD: u64 = 2;
 pub const SYS_EXIT: u64 = 3;
+pub const SYS_FORK: u64 = 4;
+pub const SYS_NICE: u64 = 5;
+pub const SYS_EXEC: u64 = 6;
+pub const SYS_GETPID: u64 = 7;
+
+// Embedded ELF images exec() can switch the calling task to; registered from lib.rs
+pub static mut EXEC_BINS: [&[u8]; 4] = [&[]; 4];
+pub static mut EXEC_NAMES: [&[u8]; 4] = [&[]; 4];
+
+pub unsafe fn set_exec_bins(bins: [&'static [u8]; 4], names: [&'static [u8]; 4]) {
+    EXEC_BINS = bins;
+    EXEC_NAMES = names;
+}
 
 #[repr(C, align(16))]
 pub struct Task {
@@ -90,6 +103,9 @@ pub unsafe fn init() {
     t.slot = 0;
     t.is_user = false;
     t.kstack_top = 0;
+    // the desktop kernel task runs at the lowest priority: user tasks always
+    // preempt it (old scheduler semantics), priority order applies among users
+    t.prio = 1;
     let n = b"miluna-gui";
     t.name[..n.len()].copy_from_slice(n);
     CUR_TASK = t as *mut Task;
@@ -162,16 +178,14 @@ pub fn schedule(f: &mut TrapFrame) -> u64 {
         if (*cur).state == ST_RUNNING {
             (*cur).state = ST_READY;
         }
-        let cur_slot = (*cur).slot;
-        let mut next: *mut Task = core::ptr::null_mut();
-        for k in 1..MAX_TASKS {
-            let i = (cur_slot + k) % MAX_TASKS;
-            if TASKS[i].state == ST_READY {
-                next = &mut TASKS[i] as *mut Task;
-                break;
+        // highest priority among ready tasks (0 = none ready)
+        let mut best: u32 = 0;
+        for i in 0..MAX_TASKS {
+            if TASKS[i].state == ST_READY && TASKS[i].prio > best {
+                best = TASKS[i].prio;
             }
         }
-        if next.is_null() {
+        if best == 0 {
             if (*cur).state == ST_READY {
                 (*cur).state = ST_RUNNING;
                 return 0;
@@ -182,6 +196,22 @@ pub fn schedule(f: &mut TrapFrame) -> u64 {
                 CUR_TASK = t0;
                 return (*t0).saved_rsp;
             }
+            if (*cur).state == ST_READY {
+                (*cur).state = ST_RUNNING;
+            }
+            return 0;
+        }
+        // round-robin among tasks with the top priority, starting after the current slot
+        let cur_slot = (*cur).slot;
+        let mut next: *mut Task = core::ptr::null_mut();
+        for k in 1..=MAX_TASKS {
+            let i = (cur_slot + k) % MAX_TASKS;
+            if TASKS[i].state == ST_READY && TASKS[i].prio == best {
+                next = &mut TASKS[i] as *mut Task;
+                break;
+            }
+        }
+        if next.is_null() {
             if (*cur).state == ST_READY {
                 (*cur).state = ST_RUNNING;
             }
@@ -221,6 +251,128 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 (*cur).state = ST_DEAD;
                 OUTPUT_DIRTY = true;
                 return schedule(f);
+            }
+            SYS_FORK => {
+                let cslot = (*cur).slot;
+                let mut slot = usize::MAX;
+                for i in 1..MAX_TASKS {
+                    if i != cslot && (TASKS[i].state == ST_FREE || TASKS[i].state == ST_DEAD) {
+                        slot = i;
+                        break;
+                    }
+                }
+                if slot == usize::MAX {
+                    f.rax = u64::MAX;
+                    return 0;
+                }
+                // build the child's PT first (copy of the parent's, retargeted to the
+                // child's own pages) and hook it in - the 2MB copy below would fault
+                // on a not-yet-mapped slot otherwise
+                let pt_src = (USER_PT_BASE + cslot * 0x1000) as *const u64;
+                let pt_dst = (USER_PT_BASE + slot * 0x1000) as *mut u64;
+                core::ptr::write_bytes(pt_dst as *mut u8, 0, 0x1000);
+                for i in 0..512 {
+                    let e = core::ptr::read_volatile(pt_src.add(i));
+                    if e & PG_PRESENT == 0 {
+                        continue;
+                    }
+                    let idx = ((e >> 12) & 0x1FF) as usize;
+                    let phys = (USER_BASE + slot * USER_SLOT + idx * 0x1000) as u64;
+                    core::ptr::write_volatile(pt_dst.add(i), phys | (e & (0xFFF | PG_NX)));
+                }
+                let pdt = 0x12000 as *mut u64;
+                core::ptr::write_volatile(
+                    pdt.add(504 + slot),
+                    ((USER_PT_BASE + slot * 0x1000) as u64) | PG_PRESENT | PG_WRITE | PG_USER,
+                );
+                flush_tlb();
+                // duplicate only the pages that actually exist in the parent's
+                // address space - unmapped holes between segments must not fault
+                let src_base = (USER_BASE + cslot * USER_SLOT) as u64;
+                let dst_base = (USER_BASE + slot * USER_SLOT) as u64;
+                for i in 0..512 {
+                    let e = core::ptr::read_volatile(pt_src.add(i));
+                    if e & PG_PRESENT == 0 {
+                        continue;
+                    }
+                    core::ptr::copy_nonoverlapping(
+                        (src_base + (i as u64) * 0x1000) as *const u8,
+                        (dst_base + (i as u64) * 0x1000) as *mut u8,
+                        0x1000,
+                    );
+                }
+                let t = &mut TASKS[slot] as *mut Task;
+                core::ptr::copy_nonoverlapping((*cur).fpu.as_ptr(), (*t).fpu.as_mut_ptr(), 512);
+                (*t).kstack_top = (KSTACKS[slot].0.as_ptr() as usize + KSTACK_SIZE) as u64;
+                (*t).slot = slot;
+                (*t).is_user = true;
+                (*t).fault_mode = (*cur).fault_mode;
+                (*t).ticks = 0;
+                (*t).msg_len = 0;
+                (*t).exit_code = 0;
+                (*t).prio = (*cur).prio;
+                (*t).pid = NEXT_PID;
+                NEXT_PID += 1;
+                (*t).name = (*cur).name;
+                // child frame: copy of the parent's; the syscall entry stored the
+                // RETURN address in rip (past the syscall instruction) already,
+                // so the child resumes right after fork() with rax = 0.
+                // rip and rsp are parent-slot linear addresses - rebase them to the
+                // child's slot, otherwise the child would run the parent's image
+                // through the shared address space until that slot gets reused
+                let pbase = (USER_BASE + cslot * USER_SLOT) as u64;
+                let cbase = (USER_BASE + slot * USER_SLOT) as u64;
+                let fp = ((*t).kstack_top - 192) as *mut TrapFrame;
+                core::ptr::copy_nonoverlapping(f as *const TrapFrame, fp, 1);
+                (*fp).rax = 0;
+                (*fp).rip = cbase + ((*fp).rip - pbase);
+                (*fp).rsp = cbase + ((*fp).rsp - pbase);
+                (*t).saved_rsp = fp as u64;
+                (*t).state = ST_READY;
+                OUTPUT_DIRTY = true;
+                f.rax = (*t).pid as u64;
+            }
+            SYS_NICE => {
+                (*cur).prio = (f.rdi as u32).clamp(1, 9);
+                f.rax = (*cur).prio as u64;
+            }
+            SYS_GETPID => {
+                f.rax = (*cur).pid as u64;
+            }
+            SYS_EXEC => {
+                let idx = f.rdi as usize;
+                let bins = core::ptr::addr_of!(EXEC_BINS) as *const &[u8];
+                let names = core::ptr::addr_of!(EXEC_NAMES) as *const &[u8];
+                if idx >= 4 || (*bins.add(idx)).is_empty() {
+                    f.rax = u64::MAX;
+                    return 0;
+                }
+                let bin: &[u8] = *bins.add(idx);
+                let name: &[u8] = *names.add(idx);
+                let slot = (*cur).slot;
+                if !elf_valid(bin) || load_elf(slot, bin) < 0 {
+                    f.rax = u64::MAX;
+                    return 0;
+                }
+                let base = USER_BASE + slot * USER_SLOT;
+                (*cur).msg_len = 0;
+                for j in 0..16 {
+                    (*cur).name[j] = if j < name.len() { name[j] } else { 0 };
+                }
+                // brand-new frame at the same kernel stack position: the old user
+                // image is gone, execution continues inside the new one
+                let fp = ((*cur).kstack_top - 192) as *mut TrapFrame;
+                core::ptr::write_bytes(fp as *mut u8, 0, 192);
+                (*fp).vector = 0;
+                (*fp).slot1 = 0;
+                (*fp).rip = base as u64 + parse_u64(bin, 0x18);
+                (*fp).cs = USER_CS as u64;
+                (*fp).rflags = 0x202;
+                (*fp).rsp = (base + USER_SLOT - 64) as u64;
+                (*fp).ss = USER_SS as u64;
+                (*cur).saved_rsp = fp as u64;
+                OUTPUT_DIRTY = true;
+                return fp as u64;
             }
             _ => {
                 f.rax = u64::MAX;
@@ -535,6 +687,7 @@ pub fn list_tasks() -> &'static str {
         put_pad(b"PID", 5);
         put_pad(b"NAME", 12);
         put_pad(b"STATE", 9);
+        put_pad(b"PRIO", 5);
         put_pad(b"TICKS", 7);
         put_pad(b"MESSAGE", 20);
         put(b'\n');
@@ -566,6 +719,23 @@ pub fn list_tasks() -> &'static str {
             }
             put_pad(&t.name[..nend], 12);
             put_pad(state_name(t.state).as_bytes(), 9);
+            let mut pv = t.prio as u64;
+            let mut pd = [0u8; 4];
+            let mut pn = 0;
+            if pv == 0 {
+                pd[0] = b'0';
+                pn = 1;
+            }
+            while pv > 0 && pn < 4 {
+                pd[pn] = b'0' + (pv % 10) as u8;
+                pv /= 10;
+                pn += 1;
+            }
+            let mut pr = [0u8; 4];
+            for k in 0..pn {
+                pr[k] = pd[pn - 1 - k];
+            }
+            put_pad(&pr[..pn], 5);
             let mut tv = t.ticks;
             let mut td = [0u8; 20];
             let mut tn = 0;
