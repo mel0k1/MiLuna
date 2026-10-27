@@ -45,8 +45,11 @@ mod cui;
 mod installer;
 mod syscfg;
 mod termfs;
+mod acpi;
 mod gdt;
+mod lapic;
 mod pit;
+mod smp;
 mod task;
 mod trap;
 
@@ -4835,6 +4838,62 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                 }
             }
 
+            fn put_str_n(put: &mut impl FnMut(u8), s: &[u8]) {
+                for &c in s {
+                    put(c);
+                }
+            }
+
+            fn cpu_info() -> &'static str {
+                static mut BUF: [u8; 256] = [0; 256];
+                static mut LEN: usize = 0;
+                unsafe {
+                    LEN = 0;
+                    let buf = core::ptr::addr_of_mut!(BUF);
+                    let len = core::ptr::addr_of_mut!(LEN);
+                    let mut put = |b: u8| {
+                        if *len < 250 {
+                            (*buf)[*len] = b;
+                            *len += 1;
+                        }
+                    };
+                    let total = crate::smp::online_count();
+                    put_str_n(&mut put, b"CPUs: ");
+                    put_dec_n(&mut put, total as u64);
+                    put_str_n(&mut put, b" (BSP + ");
+                    put_dec_n(&mut put, total.saturating_sub(1) as u64);
+                    put_str_n(&mut put, b" APs online)\nAPIC ids:");
+                    let ids = crate::smp::ap_ids();
+                    for i in 0..crate::smp::detected() {
+                        put(b' ');
+                        put_dec_n(&mut put, ids[i] as u64);
+                    }
+                    put_str_n(&mut put, b"\nLAPIC base: 0xFEE00000 (from MADT)\nSMP: APs parked in hlt loop, per-CPU scheduling next");
+                    core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                        core::ptr::addr_of!(BUF) as *const u8,
+                        *len,
+                    ))
+                }
+            }
+
+            fn put_dec_n(put: &mut impl FnMut(u8), mut v: u64) {
+                let mut digits = [0u8; 20];
+                let mut n = 0;
+                if v == 0 {
+                    put(b'0');
+                    return;
+                }
+                while v > 0 {
+                    digits[n] = b'0' + (v % 10) as u8;
+                    v /= 10;
+                    n += 1;
+                }
+                while n > 0 {
+                    n -= 1;
+                    put(digits[n]);
+                }
+            }
+
             fn spawn_hello(fault: bool) -> &'static str {
                 let name: &[u8] = if fault { b"hello-fault" } else { b"hello" };
                 let pid = task::spawn_elf(HELLO_BIN, name, fault, 5);
@@ -5231,7 +5290,8 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         }
                     }
                     "tasks" => task::list_tasks(),
-                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, tasks - ring 3 processes",
+                    "cpuinfo" => cpu_info(),
+                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, tasks - ring 3 processes\n  SMP:           cpuinfo - detected CPUs and APIC ids",
                     "ver" => "MiLuna 1.0.0",
                     "fetch" | "neofetch" => fetch_info(),
                     "mem" => mem_info(),
@@ -6559,6 +6619,9 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             }
             unsafe { task::init(); }
             unsafe { pit::init(); }
+            unsafe { acpi::init(); }
+            unsafe { lapic::enable(); }
+            unsafe { smp::init(); }
 
             let mut cursor_x = 400usize;
             let mut cursor_y = 300usize;

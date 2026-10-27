@@ -15,6 +15,7 @@ pub const USER_DATA: u64 = 0x0020F2000000FFFF;
 
 // Hardware layout: RSP0 at offset 4 (unaligned), total 104 bytes
 #[repr(align(16))]
+#[derive(Clone, Copy)]
 pub struct Tss([u8; 104]);
 
 pub static mut TSS: Tss = Tss([0; 104]);
@@ -37,10 +38,15 @@ struct Rsp0Area([u8; 8192]);
 pub static mut RSP0_STACK: Rsp0Area = Rsp0Area([0; 8192]);
 
 #[repr(C, packed)]
-struct Gdtr {
-    limit: u16,
-    base: u64,
+pub struct Gdtr {
+    pub limit: u16,
+    pub base: u64,
 }
+
+pub static mut GDTR: Gdtr = Gdtr { limit: 0, base: 0 };
+
+pub const MAX_APS: usize = 4;
+pub static mut AP_TSS: [Tss; MAX_APS] = [Tss([0; 104]); MAX_APS];
 
 pub unsafe fn init() {
     let g = core::ptr::addr_of_mut!(GDT);
@@ -63,19 +69,49 @@ pub unsafe fn init() {
     w(7, hi);
 
     TSS.set_rsp0(core::ptr::addr_of!(RSP0_STACK) as u64 + 8192);
-    let gdtr = Gdtr {
-        limit: (16 * 8 - 1) as u16,
-        base: g as u64,
-    };
+    GDTR.limit = (16 * 8 - 1) as u16;
+    GDTR.base = g as u64;
     let sel: u16 = TSS_SEL;
     core::arch::asm!(
         "lgdt [{p}]",
         "mov ax, {sel:x}",
         "ltr ax",
-        p = in(reg) &gdtr as *const Gdtr,
+        p = in(reg) core::ptr::addr_of!(GDTR),
         sel = in(reg) sel,
         out("ax") _,
     );
+}
+
+// write a TSS descriptor for AP i into reserved GDT slots (selector 0x40+0x10*i)
+pub unsafe fn write_ap_tss(i: usize, rsp0_top: u64) {
+    if i >= MAX_APS {
+        return;
+    }
+    AP_TSS[i].set_rsp0(rsp0_top);
+    let g = core::ptr::addr_of_mut!(GDT);
+    let tss_addr = core::ptr::addr_of!(AP_TSS[i]) as u64;
+    let limit = (core::mem::size_of::<Tss>() - 1) as u64;
+    let lo = (limit & 0xFFFF)
+        | ((tss_addr & 0xFFFFFF) << 16)
+        | (0x89u64 << 40)
+        | (((tss_addr >> 24) & 0xFF) << 56);
+    let hi = tss_addr >> 32;
+    core::ptr::write_volatile(core::ptr::addr_of_mut!((*g).0[8 + 2 * i]), lo);
+    core::ptr::write_volatile(core::ptr::addr_of_mut!((*g).0[9 + 2 * i]), hi);
+}
+
+// re-load the GDT pointer after AP descriptors were added. TR survives lgdt
+// and must NOT be re-loaded: the BSP TSS descriptor is busy (LTR marks it 0xB)
+// and loading a busy TSS raises #GP(0x30).
+pub unsafe fn reload() {
+    core::arch::asm!(
+        "lgdt [{p}]",
+        p = in(reg) core::ptr::addr_of!(GDTR),
+    );
+}
+
+pub unsafe fn gdtr_values() -> (u16, u64) {
+    (GDTR.limit, GDTR.base)
 }
 
 fn wrmsr(msr: u32, val: u64) {

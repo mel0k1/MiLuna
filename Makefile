@@ -91,7 +91,12 @@ target/%.elf: src/user/%.asm src/user/elf.ld
 	$(LLD) $(LLD_FLAVOR) -nostdlib -static -T src/user/elf.ld -o $@ target/$*.o
 	@echo "  User program compiled: $@"
 
-target/$(TARGET)/release/libmiluna.a: FORCE target/grub_boot.img target/grub_core.img $(USER_ELFS)
+target/tramp.bin: src/smp_trampoline.asm
+	mkdir -p target
+	nasm -f bin $< -o $@
+	@echo "  SMP trampoline compiled"
+
+target/$(TARGET)/release/libmiluna.a: FORCE target/grub_boot.img target/grub_core.img $(USER_ELFS) target/tramp.bin
 	RUSTFLAGS="-C link-arg=-nostdlib -C relocation-model=static -C code-model=kernel -C no-redzone=yes" \
 	$(CARGO) build --release \
 		-Z build-std=core,compiler_builtins,alloc \
