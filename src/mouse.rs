@@ -284,6 +284,7 @@ pub fn get_key() -> Option<u8> {
 }
 
 pub fn shift_pressed() -> bool { unsafe { SHIFT } }
+pub fn alt_pressed() -> bool { unsafe { ALT } }
 
 unsafe fn switch_layout() {
     crate::web::keys::toggle_layout();

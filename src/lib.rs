@@ -1128,7 +1128,7 @@ static mut GUI_START_REQUESTED: bool = false;
 static mut GUI_STOP_REQUESTED: bool = false;
 static mut NOTEPAD_WINDOW_REQUESTED: bool = false;
 static mut POWER_REQUEST: bool = false;
-const BARE_DESKTOP: bool = true;
+const BARE_DESKTOP: bool = false;
 const OFF_SCREEN: usize = 100_000;
 
 fn draw_text_console(gfx: &mut Graphics) {
@@ -6211,6 +6211,24 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     draw_window_content(gfx, win, idx);
                 });
 
+                if let Some((sx, sy, sw2, sh2)) = wm.snap_preview_rect(gfx.width, gfx.height) {
+                    fn blend(under: u32, c: u32, a: u32) -> u32 {
+                        let r = (((c >> 16) & 0xFF) * a + ((under >> 16) & 0xFF) * (256 - a)) >> 8;
+                        let g = (((c >> 8) & 0xFF) * a + ((under >> 8) & 0xFF) * (256 - a)) >> 8;
+                        let b = ((c & 0xFF) * a + (under & 0xFF) * (256 - a)) >> 8;
+                        (r << 16) | (g << 8) | b
+                    }
+                    for row in 0..sh2 {
+                        for col in 0..sw2 {
+                            let idx = (sy + row) * gfx.width + (sx + col);
+                            let under = unsafe { graphics::BACKBUFFER[idx] };
+                            let mut c = blend(under, 0x3A6EA5, 90);
+                            if row < 2 || col < 2 || row + 2 >= sh2 || col + 2 >= sw2 { c = 0xFFFFFF; }
+                            unsafe { graphics::BACKBUFFER[idx] = c; }
+                        }
+                    }
+                }
+
                 let (h, m, s) = get_time();
                 wm.draw_taskbar(gfx, time_to_str(h, m, s));
 
@@ -6481,6 +6499,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             ];
 
             let mut clock_ticks: u32 = 0;
+            let mut last_clock_ms: u64 = 0;
 
             loop {
                 syscfg::poll();
@@ -6617,10 +6636,12 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
                 clock_ticks = clock_ticks.wrapping_add(1);
                 unsafe {
-                    if LOGGED_IN && GUI_MODE && clock_ticks >= 10000 {
-                        clock_ticks = 0;
-                        let (_, _, s) = get_time();
-                        if s != LAST_CLOCK_SEC {
+                    if LOGGED_IN && GUI_MODE {
+                        let now_ms = timer::millis();
+                        if now_ms.wrapping_sub(last_clock_ms) >= 500 {
+                            last_clock_ms = now_ms;
+                            let (_, _, s) = get_time();
+                            if s != LAST_CLOCK_SEC {
                             LAST_CLOCK_SEC = s;
 
                             if LIVE_WALLPAPER_ENABLED {
@@ -6687,6 +6708,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             }
 
                             need_flush = true;
+                        }
                         }
                     }
                 }
@@ -6871,7 +6893,11 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             }
                         } else {
                             if sc & 0x80 == 0 {
-                                if NAME_INPUT_OPEN {
+                                if sc == 0x0F && mouse::alt_pressed() {
+                                    wm.cycle_windows();
+                                    redraw_all(&mut gfx, &wm, &term_input, term_len);
+                                    need_flush = true;
+                                } else if NAME_INPUT_OPEN {
                                     let c = match sc {
                                         0x1E => Some('a'), 0x30 => Some('b'), 0x2E => Some('c'),
                                         0x20 => Some('d'), 0x12 => Some('e'), 0x21 => Some('f'),
@@ -7114,6 +7140,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     let old_y = cursor_y;
                     cursor_x = (cursor_x as i32 + packet.dx).max(0).min((gfx.width - cursor_size) as i32) as usize;
                     cursor_y = (cursor_y as i32 + packet.dy).max(0).min((gfx.height - cursor_size) as i32) as usize;
+                    cui::set_hover(cursor_x, cursor_y);
 
                     for dy in 0..cursor_size {
                         for dx in 0..cursor_size {

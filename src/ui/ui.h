@@ -49,6 +49,8 @@ void ui_draw_start_menu(void);
 int  ui_start_menu_contains(int px, int py);
 int  ui_start_menu_item(int px, int py);
 
+void ui_set_hover(int x, int y);
+int  ui_hov_in(int x, int y, int w, int h);
 extern void miluna_ui_text(int x, int y, const u8 *s, usize len, u32 fg, u32 bg);
 extern int miluna_ui_lang(void);
 

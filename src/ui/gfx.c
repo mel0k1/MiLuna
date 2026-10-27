@@ -3,6 +3,13 @@
 u32 *ui_bb;
 int ui_w, ui_h;
 ui_theme ui_t;
+static int hov_x = -1, hov_y = -1;
+
+void ui_set_hover(int x, int y) { hov_x = x; hov_y = y; }
+
+int ui_hov_in(int x, int y, int w, int h) {
+    return hov_x >= x && hov_x < x + w && hov_y >= y && hov_y < y + h;
+}
 
 void ui_init(u32 *backbuffer, int width, int height) {
     ui_bb = backbuffer;

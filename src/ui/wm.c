@@ -37,37 +37,42 @@ static void sym_cross(int cx, int cy, int size, u32 c) {
 
 static void win7_button(int x, int y, int size, int sym) {
     u32 bg = ui_rgb(220, 220, 230), border = ui_rgb(150, 150, 160), sc = ui_rgb(80, 80, 90);
-    ui_fill(x, y, size, size, bg);
-    ui_frame(x, y, size, size, border);
+    ui_fill(x, y, size, size, ui_hov_in(x, y, size, size) ? ui_rgb(130, 190, 250) : bg);
+    ui_frame(x, y, size, size, ui_hov_in(x, y, size, size) ? ui_rgb(60, 130, 210) : border);
+    u32 hc = ui_hov_in(x, y, size, size) ? ui_rgb(30, 50, 80) : sc;
     int cx = x + size / 2, cy = y + size / 2;
     if (sym == SYM_MIN) {
         int lw = size / 2;
-        ui_hline(cx - lw / 2, cy + 2, lw, sc);
+        ui_hline(cx - lw / 2, cy + 2, lw, hc);
     } else if (sym == SYM_MAX) {
         int b = size / 2;
-        ui_frame(cx - b / 2, cy - b / 2, b, b, sc);
+        ui_frame(cx - b / 2, cy - b / 2, b, b, hc);
     } else {
-        sym_cross(cx, cy, size, sc);
+        sym_cross(cx, cy, size, hc);
     }
     if (sym != SYM_CLOSE) ui_hline(x + 1, y + 1, size - 2, ui_rgb(245, 245, 250));
 }
 
 static void ubuntu_button(int x, int y, int size, int sym) {
     u32 c = ui_rgb(180, 180, 180);
+    int hov = ui_hov_in(x, y, size, size);
     if (sym == SYM_CLOSE) {
-        ui_fill(x, y, size, size, ui_rgb(48, 48, 48));
+        ui_fill(x, y, size, size, hov ? ui_rgb(220, 70, 50) : ui_rgb(48, 48, 48));
         sym_cross(x + size / 2, y + size / 2, size, c);
     } else if (sym == SYM_MIN) {
-        ui_hline(x + size / 4, y + size / 2 + 2, size * 3 / 4 - size / 4, c);
+        if (hov) ui_fill(x, y, size, size, ui_rgb(70, 70, 70));
+        ui_hline(x + size / 4, y + size / 2 + 2, size * 3 / 4 - size / 4, hov ? ui_rgb(240, 240, 240) : c);
     } else {
+        if (hov) ui_fill(x, y, size, size, ui_rgb(70, 70, 70));
         int b = size / 3;
-        ui_frame(x + size / 2 - b / 2, y + size / 2 - b / 2, b, b, c);
+        ui_frame(x + size / 2 - b / 2, y + size / 2 - b / 2, b, b, hov ? ui_rgb(240, 240, 240) : c);
     }
 }
 
 static void classic_button(int x, int y, int size, int sym) {
     u32 face = ui_rgb(212, 208, 200), black = 0;
-    ui_fill(x, y, size, size, face);
+    if (ui_hov_in(x, y, size, size)) ui_fill(x + 2, y + 2, size - 4, size - 4, ui_rgb(180, 200, 235));
+    else ui_fill(x, y, size, size, face);
     ui_hline(x, y, size, 0xFFFFFF);
     ui_vline(x, y, size, 0xFFFFFF);
     ui_hline(x + 1, y + size - 2, size - 1, ui_rgb(128, 128, 128));

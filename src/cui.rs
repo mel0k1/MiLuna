@@ -63,6 +63,7 @@ extern "C" {
     fn ui_draw_start_menu();
     fn ui_start_menu_contains(px: i32, py: i32) -> i32;
     fn ui_start_menu_item(px: i32, py: i32) -> i32;
+    fn ui_set_hover(px: i32, py: i32);
 }
 
 static mut GFX: *mut Graphics = core::ptr::null_mut();
@@ -146,6 +147,9 @@ pub fn taskbar_hit(wins: &[UiWindow], px: usize, py: usize, clock_len: usize) ->
 }
 pub fn draw_start_menu(gfx: &mut Graphics) {
     with(gfx, || unsafe { ui_draw_start_menu() })
+}
+pub fn set_hover(x: usize, y: usize) {
+    unsafe { ui_set_hover(x as i32, y as i32) }
 }
 pub fn start_menu_contains(px: usize, py: usize) -> bool {
     ready() && unsafe { ui_start_menu_contains(px as i32, py as i32) != 0 }

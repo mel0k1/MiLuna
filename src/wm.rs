@@ -521,10 +521,70 @@ impl WindowManager {
     pub fn handle_mouse_release(&mut self, _gfx: &mut Graphics) -> bool {
         self.resizing_window = None;
         if let Some(i) = self.dragged_window.take() {
+            let zone = unsafe { SNAP_ZONE };
+            unsafe { SNAP_ZONE = 0; }
+            if zone != 0 {
+                self.apply_snap(i, zone);
+                return true;
+            }
             if let Some(ref mut win) = self.windows[i] { win.is_dragging = false; }
             return true;
         }
+        unsafe { SNAP_ZONE = 0; }
         false
+    }
+
+    pub fn apply_snap(&mut self, idx: usize, zone: u8) {
+        if idx >= self.window_count { return; }
+        let sw = self.screen_w;
+        let sh = self.screen_h.saturating_sub(cui::TASKBAR_H);
+        if let Some(ref mut win) = self.windows[idx] {
+            win.is_dragging = false;
+            if win.state == WindowState::Normal {
+                win.restore_rect = (win.x, win.y, win.width, win.height);
+            }
+            match zone {
+                1 => {
+                    win.x = 0; win.y = 0; win.width = sw; win.height = sh;
+                    win.state = WindowState::Maximized;
+                }
+                2 => {
+                    win.x = 0; win.y = 0; win.width = sw / 2; win.height = sh;
+                    win.state = WindowState::Normal;
+                }
+                3 => {
+                    win.x = sw / 2; win.y = 0; win.width = sw - sw / 2; win.height = sh;
+                    win.state = WindowState::Normal;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn snap_preview_rect(&self, sw: usize, sh: usize) -> Option<(usize, usize, usize, usize)> {
+        let zone = unsafe { SNAP_ZONE };
+        let sh = sh.saturating_sub(cui::TASKBAR_H);
+        match zone {
+            1 => Some((0, 0, sw, sh)),
+            2 => Some((0, 0, sw / 2, sh)),
+            3 => Some((sw / 2, 0, sw - sw / 2, sh)),
+            _ => None,
+        }
+    }
+
+    pub fn cycle_windows(&mut self) {
+        if self.window_count == 0 { return; }
+        let start = self.active_window.unwrap_or(self.window_count - 1).min(self.window_count - 1);
+        for step in 1..=self.window_count {
+            let i = (start + step) % self.window_count;
+            if self.windows[i].is_some() {
+                if let Some(ref mut win) = self.windows[i] {
+                    if win.state == WindowState::Minimized { win.state = WindowState::Normal; }
+                }
+                self.raise(i);
+                return;
+            }
+        }
     }
 
     pub fn handle_mouse_move(&mut self, gfx: &mut Graphics, cx: usize, cy: usize) -> bool {
@@ -549,6 +609,8 @@ impl WindowManager {
                 win.restore_rect.0 = win.x;
                 win.restore_rect.1 = win.y;
             }
+            let zone = if cy <= 30 { 1u8 } else if cx <= 30 { 2 } else if cx + 30 >= gfx.width { 3 } else { 0 };
+            unsafe { SNAP_ZONE = zone; }
             return true;
         }
         false
@@ -618,6 +680,8 @@ impl WindowManager {
         }
     }
 }
+
+pub static mut SNAP_ZONE: u8 = 0;
 
 pub static mut THEME_SELECTOR_OPEN: bool = false;
 pub static mut THEME_SELECTOR_X: usize = 0;
