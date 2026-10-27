@@ -36,11 +36,15 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 - Пользователи: вход, `useradd`, `userdel`, `passwd`
 
 **Многозадачность и Ring 3**
-- Вытесняющий планировщик: PIT 50 Гц (IRQ0), round-robin, полное сохранение контекста в обработчике прерывания (регистры + FXSAVE/FXRSTOR)
-- Пользовательский режим: TSS, user-сегменты GDT, U/S-страницы страниц таблиц; процессы исполняются в ring 3
-- Системные вызовы `int 0x80`: `write`, `yield`, `exit` — шлюз DPL 3, автоматический переход на стек ядра через TSS.RSP0
-- Изоляция отказов: исключение в процессе (деление на ноль, #UD, #PF) убивает только процесс — ядро и GUI продолжают работать
-- Демо в терминале: `hello`, `hello fault`, `tasks`; живая таблица процессов в Task Manager
+- Вытесняющий планировщик: PIT 50 Гц (IRQ0), полное сохранение контекста (регистры + FXSAVE/FXRSTOR), приоритеты 1–9 (round-robin внутри уровня)
+- Пользовательский режим: TSS (RSP0), user-сегменты GDT, U/S-страницы; процессы исполняются в ring 3
+- ELF-загрузчик: пользовательские программы — настоящие ELF64, сегменты мапятся с правами (text R+X, rodata R, data/stack RW, всё неисполняемое помечено NX-битом)
+- Быстрый путь `syscall`/`sysret` через MSR STAR/LSTAR/SFMASK + классический `int 0x80` как резервный вход
+- Системные вызовы: `write`, `yield`, `exit`, `fork`, `exec`, `nice`, `getpid` — fork копирует образ и страницы с правами, exec перезагружает ELF в тот же процесс
+- NX-бит (EFER.NXE): переход на data-страницу роняет процесс с #PF — W^X для пользовательской памяти
+- Изоляция отказов: исключение в процессе убивает только процесс — ядро и GUI продолжают работать
+- SMP: парсинг ACPI MADT (RSDP→RSDT/XSDT), INIT-SIPI через Local APIC, AP-процессоры просыпаются в long mode через trampoline на 0x8000 и паркуются; `cpuinfo` показывает карту CPU
+- Демо в терминале: `hello`, `hello fault`, `nx`, `fork`, `prio`, `exec`, `tasks`, `cpuinfo`
 
 **Графический интерфейс** (`gui /start --all`)
 - Оконный менеджер на C: рамки, тени, свернуть/развернуть/закрыть, панель задач, меню «Пуск», часы
@@ -71,10 +75,11 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 | ![Task Manager](docs/screenshots/task-manager.jpg) | ![Календарь](docs/screenshots/calendar.jpg) |
 | ![PC Info](docs/screenshots/pc-info.jpg) | ![Settings](docs/screenshots/settings.jpg) |
 | ![Ring 3 процессы](docs/screenshots/ring3-tasks.jpg) | ![Изоляция отказов](docs/screenshots/ring3-fault.jpg) |
+| ![ELF, NX и fork](docs/screenshots/ring3-elf.jpg) | ![SMP — 4 CPU](docs/screenshots/smp-cpuinfo.jpg) |
 
 Aero Snap: перетащите окно к верхнему краю — развернётся на весь экран, к левому или правому — займёт половину.
 
-`task-manager.jpg`: окно Task Manager показывает настоящие задачи ядра: PID, состояние (Running/Ready/Dead), тики таймера и последнее сообщение процесса. `ring3-tasks.jpg`: процесс `hello` исполняется в ring 3 и отчитывается через `int 0x80` (`ring3 task tick 308`). `ring3-fault.jpg`: процесс с намеренным `#UD` изолирован ядром (Dead, код 262) — система продолжила работу.
+`task-manager.jpg`: окно Task Manager показывает настоящие задачи ядра: PID, состояние (Running/Ready/Dead), тики таймера и последнее сообщение процесса. `ring3-tasks.jpg`: процесс `hello` исполняется в ring 3 и отчитывается через `int 0x80` (`ring3 task tick 308`). `ring3-fault.jpg`: процесс с намеренным `#UD` изолирован ядром (Dead, код 262) — система продолжила работу. `ring3-elf.jpg`: таблица процессов с колонкой PRIO — `hello fault` изолирован (262), `nx-test` убит #PF за исполнение NX-страницы (270). `smp-cpuinfo.jpg`: `cpuinfo` — 4 CPU из ACPI MADT, все AP проснулись через INIT-SIPI.
 
 ## fetch
 
@@ -206,15 +211,19 @@ MiLuna/
 - [x] Полный рабочий стол: панель задач, меню «Пуск», иконки, обои
 - [x] Alt+Tab и Aero Snap (верх/лево/право с превью зоны)
 - [x] Вытесняющая многозадачность: PIT 50 Гц (IRQ0), контекст-свитч из прерывания, FXSAVE/FXRSTOR
-- [x] Ring 3: TSS, user-сегменты GDT, U/S-страницы, процессы с syscall `int 0x80` (write/yield/exit), изоляция отказов
+- [x] Ring 3: TSS, user-сегменты GDT, U/S-страницы, изоляция отказов
+- [x] ELF-загрузчик с per-page правами сегментов и NX-битом (EFER.NXE), стек и сегменты раздельно
+- [x] Быстрый путь `syscall`/`sysret` (STAR/LSTAR/SFMASK), кадр на стеке задачи, `int 0x80` как резерв
+- [x] `fork`/`exec`/`nice`/`getpid`, приоритеты планировщика 1–9
+- [x] SMP: ACPI MADT, Local APIC, INIT-SIPI bringup, per-AP TSS и GDT, `cpuinfo`
 - [x] Task Manager показывает реальные задачи ядра вместо заглушек
 
 **Дальше**
-- [ ] Быстрый путь `syscall`/`sysret` (MSR LSTAR/STAR/FMASK) и ELF-загрузчик пользовательских программ
-- [ ] `fork`/`exec`-модель, разделяемая память, приоритеты планировщика
-- [ ] SMP: парсинг MADT, INIT-SIPI, per-CPU области, блокировки
-- [ ] NX-бит и защита ядерных страниц
-- [ ] HPET/LAPIC-таймер вместо busy-wait `sleep`, ACPI poweroff
+- [ ] Планирование задач на AP-процессорах (per-CPU очереди, task stealing, спин-блокировки)
+- [ ] LAPIC-таймер на всех ядрах вместо PIT только на BSP
+- [ ] Copy-on-write fork и per-process таблицы страниц (полная изоляция адресных пространств)
+- [ ] `wait`/`exit` статусы и зомби-процессы, сигналы
+- [ ] HPET вместо busy-wait `sleep`, ACPI poweroff
 - [ ] Больше окон одновременно (сейчас 8), damage-tracking во всём композиторе
 - [ ] Постепенный отказ от `static mut` в пользу безопасных абстракций
 - [ ] Сжатие встроенных BMP-ресурсов (сейчас 4+ МБ)
