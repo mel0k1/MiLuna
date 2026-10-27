@@ -81,7 +81,7 @@ start:
     
     mov ecx, 0xC0000080
     rdmsr
-    or eax, 0x100
+    or eax, 0x900               ; EFER.LME | EFER.NXE (NX bit support for user pages)
     wrmsr
 
     

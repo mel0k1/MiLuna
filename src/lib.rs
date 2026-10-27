@@ -50,7 +50,8 @@ mod pit;
 mod task;
 mod trap;
 
-static HELLO_BIN: &[u8] = include_bytes!("user/hello.bin");
+static HELLO_BIN: &[u8] = include_bytes!("../target/hello.elf");
+static NX_BIN: &[u8] = include_bytes!("../target/nx.elf");
 
 pub static mut NET_APP_REQUEST: u8 = 0;
 
@@ -4833,7 +4834,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
             fn spawn_hello(fault: bool) -> &'static str {
                 let name: &[u8] = if fault { b"hello-fault" } else { b"hello" };
-                let pid = task::spawn_user(HELLO_BIN, name, fault);
+                let pid = task::spawn_elf(HELLO_BIN, name, fault, 5);
                 if pid >= 0 {
                     if fault {
                         "ring3 task spawned (fault mode: #UD at tick 5). Watch Task Manager / `tasks`."
@@ -4842,6 +4843,8 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     }
                 } else if pid == -1 {
                     "task table full"
+                } else if pid == -2 {
+                    "bad elf image"
                 } else {
                     "spawn failed"
                 }
@@ -5191,8 +5194,16 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                 match trimmed {
                     "hello" => spawn_hello(false),
                     "hello fault" => spawn_hello(true),
+                    "nx" => {
+                        let pid = task::spawn_elf(NX_BIN, b"nx-test", false, 5);
+                        if pid >= 0 {
+                            "nx-test spawned: jumps into an NX page -> #PF. Run `tasks` to see it die."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
                     "tasks" => task::list_tasks(),
-                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, tasks - ring 3 processes",
+                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, tasks - ring 3 processes",
                     "ver" => "MiLuna 1.0.0",
                     "fetch" | "neofetch" => fetch_info(),
                     "mem" => mem_info(),

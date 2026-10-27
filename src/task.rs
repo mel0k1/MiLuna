@@ -7,6 +7,19 @@ pub const MAX_TASKS: usize = 8;
 pub const KSTACK_SIZE: usize = 16 * 1024;
 pub const USER_BASE: usize = 0x3F000000;
 pub const USER_SLOT: usize = 2 * 1024 * 1024;
+// One 4K page table per user slot, placed below the user region.
+// Slot phys pages are 1:1, so the PT just re-describes them with per-page rights.
+pub const USER_PT_BASE: usize = 0x3E000000;
+
+// Page flags
+const PG_PRESENT: u64 = 0x1;
+const PG_WRITE: u64 = 0x2;
+const PG_USER: u64 = 0x4;
+const PG_NX: u64 = 0x8000_0000_0000_0000;
+
+// ELF64 constants
+const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
+const PT_LOAD: u32 = 1;
 
 pub const ST_FREE: u8 = 0;
 pub const ST_READY: u8 = 1;
@@ -33,6 +46,7 @@ pub struct Task {
     pub msg: [u8; 64],
     pub msg_len: usize,
     pub exit_code: u32,
+    pub prio: u32,
 }
 
 const TASK_TEMPLATE: Task = Task {
@@ -50,6 +64,7 @@ const TASK_TEMPLATE: Task = Task {
     msg: [0; 64],
     msg_len: 0,
     exit_code: 0,
+    prio: 5,
 };
 
 pub static mut TASKS: [Task; MAX_TASKS] = [TASK_TEMPLATE; MAX_TASKS];
@@ -83,18 +98,58 @@ pub unsafe fn init() {
 
 fn enable_user_pages() {
     // identity-map page tables from boot.asm: PML4@0x10000, PDPT@0x11000, PDT0@0x12000
-    // set U/S on PML4[0], PDPT[0] and PDT entries 504..512 (0x3F000000..0x40000000)
+    // set U/S on PML4[0] and PDPT[0]; per-slot PTs are hooked into PDT0[504..512] at spawn
     unsafe {
         let pml4 = 0x10000 as *mut u64;
         core::ptr::write_volatile(pml4, core::ptr::read_volatile(pml4) | 0x4);
         let pdpt = 0x11000 as *mut u64;
         core::ptr::write_volatile(pdpt, core::ptr::read_volatile(pdpt) | 0x4);
-        let pdt = 0x12000 as *mut u64;
-        for i in 504..512 {
-            let e = pdt.add(i);
-            core::ptr::write_volatile(e, core::ptr::read_volatile(e) | 0x4);
-        }
     }
+}
+
+pub unsafe fn flush_tlb() {
+    let cr3: u64;
+    core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+    core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nomem, nostack));
+}
+
+// Map [voff, voff+len) of the slot's user region with per-page flags.
+// Physical pages are the slot's own 1:1 pages.
+unsafe fn map_user_range(slot: usize, voff: u64, len: u64, flags: u64) {
+    let pt = (USER_PT_BASE + slot * 0x1000) as *mut u64;
+    let start = (voff >> 12) as usize;
+    let end = (((voff + len) + 0xFFF) >> 12) as usize;
+    let phys_base = (USER_BASE + slot * USER_SLOT) as u64;
+    for i in start..end.min(512) {
+        let pte = pt.add(i);
+        let phys = phys_base + (i as u64) * 0x1000;
+        // union semantics for pages shared by several segments:
+        // writable if any segment wants W, executable if any earlier mapping had X
+        let old = core::ptr::read_volatile(pte);
+        let mut fl = flags;
+        if old & PG_PRESENT != 0 {
+            if old & PG_NX == 0 {
+                fl &= !PG_NX;
+            }
+            fl |= old & PG_WRITE;
+        }
+        core::ptr::write_volatile(pte, phys | fl);
+    }
+}
+
+fn parse_u16(b: &[u8], off: usize) -> u16 {
+    u16::from_le_bytes([b[off], b[off + 1]])
+}
+
+fn parse_u32(b: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
+
+fn parse_u64(b: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes([
+        b[off], b[off + 1], b[off + 2], b[off + 3],
+        b[off + 4], b[off + 5], b[off + 6], b[off + 7],
+    ])
 }
 
 pub fn schedule(f: &mut TrapFrame) -> u64 {
@@ -254,8 +309,11 @@ fn with_irqs_disabled<R>(f: impl FnOnce() -> R) -> R {
     r
 }
 
-pub fn spawn_user(bin: &[u8], name: &[u8], fault: bool) -> i32 {
+pub fn spawn_elf(bin: &[u8], name: &[u8], fault: bool, prio: u32) -> i32 {
     with_irqs_disabled(|| unsafe {
+        if !elf_valid(bin) {
+            return -2;
+        }
         let mut slot = usize::MAX;
         for i in 1..MAX_TASKS {
             if TASKS[i].state == ST_FREE || TASKS[i].state == ST_DEAD {
@@ -266,11 +324,11 @@ pub fn spawn_user(bin: &[u8], name: &[u8], fault: bool) -> i32 {
         if slot == usize::MAX {
             return -1;
         }
-        if bin.len() > USER_SLOT / 2 {
-            return -2;
+        if load_elf(slot, bin) < 0 {
+            return -3;
         }
         let base = USER_BASE + slot * USER_SLOT;
-        core::ptr::copy_nonoverlapping(bin.as_ptr(), base as *mut u8, bin.len());
+        let entry = base as u64 + parse_u64(bin, 0x18);
         let t = &mut TASKS[slot] as *mut Task;
         core::ptr::write_bytes((*t).fpu.as_mut_ptr(), 0, 512);
         *((*t).fpu.as_mut_ptr() as *mut u16) = 0x037F;
@@ -284,6 +342,7 @@ pub fn spawn_user(bin: &[u8], name: &[u8], fault: bool) -> i32 {
         (*t).exit_code = 0;
         (*t).pid = NEXT_PID;
         NEXT_PID += 1;
+        (*t).prio = prio.clamp(1, 9);
         for j in 0..16 {
             (*t).name[j] = if j < name.len() { name[j] } else { 0 };
         }
@@ -293,7 +352,7 @@ pub fn spawn_user(bin: &[u8], name: &[u8], fault: bool) -> i32 {
         fr.rdi = if fault { 1 } else { 0 };
         fr.vector = 0;
         fr.slot1 = 0;
-        fr.rip = base as u64;
+        fr.rip = entry;
         fr.cs = USER_CS as u64;
         fr.rflags = 0x202;
         fr.rsp = (base + USER_SLOT - 64) as u64;
@@ -302,6 +361,80 @@ pub fn spawn_user(bin: &[u8], name: &[u8], fault: bool) -> i32 {
         (*t).state = ST_READY;
         (*t).pid as i32
     })
+}
+
+fn elf_valid(bin: &[u8]) -> bool {
+    if bin.len() < 64 || bin[0..4] != ELF_MAGIC || bin[4] != 2 || bin[5] != 1 {
+        return false;
+    }
+    // x86-64
+    if parse_u16(bin, 0x12) != 0x3E {
+        return false;
+    }
+    let phoff = parse_u64(bin, 0x20);
+    let phentsize = parse_u16(bin, 0x36) as u64;
+    let phnum = parse_u16(bin, 0x38) as u64;
+    phoff > 0 && phoff + phnum * phentsize <= bin.len() as u64 && phnum > 0 && phnum <= 32
+}
+
+// Parse ELF64 program headers, copy segments into the slot and map them
+// with per-page rights: text R+X, rodata R, data/stack RW, all non-X pages NX.
+unsafe fn load_elf(slot: usize, bin: &[u8]) -> i32 {
+    let e_entry = parse_u64(bin, 0x18);
+    let phoff = parse_u64(bin, 0x20) as usize;
+    let phentsize = parse_u16(bin, 0x36) as usize;
+    let phnum = parse_u16(bin, 0x38) as usize;
+    if e_entry >= (USER_SLOT - 64 * 1024) as u64 {
+        return -1;
+    }
+    let pt = (USER_PT_BASE + slot * 0x1000) as *mut u64;
+    core::ptr::write_bytes(pt as *mut u8, 0, 0x1000);
+    // hook slot PT into PDT0[504+slot]: present | write | user
+    let pdt = 0x12000 as *mut u64;
+    core::ptr::write_volatile(pdt.add(504 + slot), (pt as u64) | PG_PRESENT | PG_WRITE | PG_USER);
+    // stack: last 64KB of slot, RW + NX (code/segments are limited below it)
+    let stack_off = (USER_SLOT - 64 * 1024) as u64;
+    map_user_range(slot, stack_off, 64 * 1024, PG_PRESENT | PG_WRITE | PG_USER | PG_NX);
+    let base = USER_BASE + slot * USER_SLOT;
+    for i in 0..phnum {
+        let p = &bin[phoff + i * phentsize..];
+        if parse_u32(p, 0) != PT_LOAD {
+            continue;
+        }
+        let flags = parse_u32(p, 4);
+        let off = parse_u64(p, 8) as usize;
+        let vaddr = parse_u64(p, 16);
+        let filesz = parse_u64(p, 32);
+        let memsz = parse_u64(p, 40);
+        if vaddr >= stack_off || memsz > stack_off || vaddr + memsz > stack_off {
+            return -1;
+        }
+        if off + filesz as usize > bin.len() {
+            return -1;
+        }
+        // map BEFORE copying: fresh PT pages are not-present, the segment copy
+        // would fault on them otherwise; CR0.WP=0 lets ring 0 write R+X pages
+        let mut fl = PG_PRESENT | PG_USER;
+        if flags & 2 != 0 {
+            fl |= PG_WRITE;
+        }
+        if flags & 1 == 0 {
+            fl |= PG_NX;
+        }
+        map_user_range(slot, vaddr, memsz, fl);
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        let dst = (base as u64 + vaddr) as *mut u8;
+        if filesz > 0 {
+            core::ptr::copy_nonoverlapping(bin[off..].as_ptr(), dst, filesz as usize);
+        }
+        if memsz > filesz {
+            core::ptr::write_bytes(dst.add(filesz as usize), 0, (memsz - filesz) as usize);
+        }
+    }
+    // fresh page-table state: stale TLB entries from a previous task in this slot
+    // (possibly NX) would fault the kernel's own segment-copy or future accesses
+    flush_tlb();
+    0
 }
 
 #[derive(Clone, Copy)]

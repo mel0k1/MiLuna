@@ -1,7 +1,8 @@
-; MiLuna ring 3 demo task
-; Flat binary, position-independent (rip-relative), loaded anywhere in user region
+; MiLuna ring 3 demo task (ELF64)
+; Loaded by the kernel ELF loader at slot_base + 0x10000
 ; Entry args: rdi = 0 normal mode, 1 fault mode (ud2 on tick 5)
-; Syscalls: int 0x80, rax = 1 write(ptr,len) / 2 yield / 3 exit(code)
+; Syscalls (int 0x80 in this build): rax = 1 write(ptr,len) / 2 yield / 3 exit(code)
+; NOTE: syscall/sysret migration clobbers rcx/r11 - keep state in rbx/r12-r15 only
 
 BITS 64
 default rel
@@ -10,6 +11,8 @@ default rel
 %define SYS_YIELD 2
 %define SYS_EXIT  3
 
+section .text
+global _start
 _start:
     xor r8, r8
     test rdi, rdi
@@ -72,7 +75,8 @@ _start:
 .hang:
     jmp .hang
 
-pref: db "ring3 task tick "
+section .rodata
+pref: db "ring3 elf tick "
 pref_len equ $ - pref
 msg_len equ pref_len + 4
 
