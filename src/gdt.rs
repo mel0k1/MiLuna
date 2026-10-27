@@ -1,9 +1,12 @@
-// GDT with user-mode segments and TSS for ring 3 support
-// Selector values match boot.asm: 0x08 kcode, 0x10 kdata, 0x18 ucode, 0x20 udata, 0x28 TSS
+// GDT with user-mode segments, TSS and syscall/sysret MSRs.
+// Selector layout is chosen for SYSRET: it loads CS = STAR[63:48]+16 and
+// SS = STAR[63:48]+8, so user data must sit 8 below user code.
+//   0x08 kcode | 0x10 kdata | 0x18 udata | 0x20 ucode | 0x30 TSS (BSP)
+// Entries 8..15 are reserved for per-AP TSS descriptors (0x40..0x70).
 
-pub const USER_CS: u16 = 0x1B;
-pub const USER_SS: u16 = 0x23;
-pub const TSS_SEL: u16 = 0x28;
+pub const USER_CS: u16 = 0x23; // selector 0x20 | RPL 3
+pub const USER_SS: u16 = 0x1B; // selector 0x18 | RPL 3
+pub const TSS_SEL: u16 = 0x30;
 
 pub const KERNEL_CODE: u64 = 0x00209A000000FFFF;
 pub const KERNEL_DATA: u64 = 0x002092000000FFFF;
@@ -23,9 +26,9 @@ impl Tss {
 }
 
 #[repr(C, align(16))]
-struct GdtTable([u64; 8]);
+struct GdtTable([u64; 16]);
 
-static mut GDT: GdtTable = GdtTable([0; 8]);
+static mut GDT: GdtTable = GdtTable([0; 16]);
 
 #[repr(C, align(16))]
 struct Rsp0Area([u8; 8192]);
@@ -46,8 +49,8 @@ pub unsafe fn init() {
     };
     w(1, KERNEL_CODE);
     w(2, KERNEL_DATA);
-    w(3, USER_CODE);
-    w(4, USER_DATA);
+    w(3, USER_DATA);
+    w(4, USER_CODE);
 
     let tss_addr = core::ptr::addr_of!(TSS) as u64;
     let limit = (core::mem::size_of::<Tss>() - 1) as u64;
@@ -56,13 +59,12 @@ pub unsafe fn init() {
         | (0x89u64 << 40)
         | (((tss_addr >> 24) & 0xFF) << 56);
     let hi = tss_addr >> 32;
-    w(5, lo);
-    w(6, hi);
-    w(7, 0);
+    w(6, lo);
+    w(7, hi);
 
     TSS.set_rsp0(core::ptr::addr_of!(RSP0_STACK) as u64 + 8192);
     let gdtr = Gdtr {
-        limit: (8 * 8 - 1) as u16,
+        limit: (16 * 8 - 1) as u16,
         base: g as u64,
     };
     let sel: u16 = TSS_SEL;
@@ -74,4 +76,26 @@ pub unsafe fn init() {
         sel = in(reg) sel,
         out("ax") _,
     );
+}
+
+fn wrmsr(msr: u32, val: u64) {
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") val as u32,
+            in("edx") (val >> 32) as u32,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+// Program the syscall/sysret fast path MSRs. EFER.SCE is already set by boot.asm;
+// STAR: syscall enters CS=0x08/SS=0x10, sysret leaves to CS=0x20/SS=0x18 (RPL3 forced).
+// SFMASK clears TF|IF|DF|NT on entry so the entry window runs with interrupts off.
+pub unsafe fn init_syscall() {
+    let star: u64 = (0x10u64 << 48) | (0x08u64 << 32);
+    wrmsr(0xC000_0081, star);
+    wrmsr(0xC000_0082, crate::trap::syscall_fast_entry as u64);
+    wrmsr(0xC000_0084, 0x4700);
 }

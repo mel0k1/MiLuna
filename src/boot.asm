@@ -81,7 +81,7 @@ start:
     
     mov ecx, 0xC0000080
     rdmsr
-    or eax, 0x900               ; EFER.LME | EFER.NXE (NX bit support for user pages)
+    or eax, 0x901                ; EFER.LME | EFER.NXE | EFER.SCE (syscall/sysret)
     wrmsr
 
     
@@ -163,10 +163,10 @@ init_gdt64:
 
 
     mov dword [GDT64_ADDR + 24], 0x0000FFFF
-    mov dword [GDT64_ADDR + 28], 0x0020FA00
+    mov dword [GDT64_ADDR + 28], 0x0020F200
 
     mov dword [GDT64_ADDR + 32], 0x0000FFFF
-    mov dword [GDT64_ADDR + 36], 0x0020F200
+    mov dword [GDT64_ADDR + 36], 0x0020FA00
 
     mov word [gdt64_ptr], (5 * 8 - 1)
     mov dword [gdt64_ptr + 2], GDT64_ADDR

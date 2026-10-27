@@ -52,6 +52,110 @@ pub extern "x86-interrupt" fn syscall_entry(_sf: &crate::idt::InterruptStackFram
     );
 }
 
+// Fast syscall entry (SYSCALL instruction, MSR-programmed via gdt::init_syscall).
+// On entry: ring 0 on the USER stack, rcx = user rip, r11 = user rflags,
+// rax = syscall number, interrupts already off (SFMASK cleared IF).
+// Builds the same 192-byte TrapFrame the int 0x80 path uses, on the RSP0 area,
+// then dispatches into handle_trap. Returns to ring 3 via SYSRET - unless the
+// scheduler switched to the kernel task, whose frames must return via IRETQ.
+#[unsafe(naked)]
+pub extern "C" fn syscall_fast_entry() {
+    naked_asm!(
+        // save user rsp, then move to the RSP0 area: frame occupies top-192..top
+        "mov [rip + {scratch}], rsp",
+        "lea rsp, [rip + {rsp0}]",
+        "add rsp, 8128",
+        // 16 pushes land rax at frame+0; rcx/r11 slots get informational values
+        "push 0",
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rdi",
+        "push rsi",
+        "push rbp",
+        "push rbx",
+        "push rdx",
+        "push rcx",
+        "push rax",
+        // iret portion of the frame
+        "mov qword ptr [rsp + 128], 0x80",
+        "mov qword ptr [rsp + 136], 0",
+        "mov [rsp + 144], rcx",
+        "mov qword ptr [rsp + 152], {cs3}",
+        "mov [rsp + 160], r11",
+        "mov rax, [rip + {scratch}]",
+        "mov [rsp + 168], rax",
+        "mov qword ptr [rsp + 176], {ss3}",
+        // fpu state, Rust handler
+        "mov rax, [rip + {cur_task}]",
+        "mov rax, [rax]",
+        "lea rdi, [rax + 16]",
+        "fxsave [rdi]",
+        "mov rdi, rsp",
+        "call {handle}",
+        "test rax, rax",
+        "jz 2f",
+        "mov rsp, rax",
+        "2:",
+        "mov rax, [rip + {cur_task}]",
+        "mov rax, [rax]",
+        "lea rdi, [rax + 16]",
+        "fxrstor [rdi]",
+        // ring3 target -> sysret; ring0 target (kernel task) -> iretq
+        "mov rcx, [rsp + 152]",
+        "test cl, 3",
+        "jz 4f",
+        "mov rax, [rsp]",
+        "mov rdx, [rsp + 16]",
+        "mov rbx, [rsp + 24]",
+        "mov rbp, [rsp + 32]",
+        "mov rsi, [rsp + 40]",
+        "mov rdi, [rsp + 48]",
+        "mov r8, [rsp + 56]",
+        "mov r9, [rsp + 64]",
+        "mov r10, [rsp + 72]",
+        "mov r12, [rsp + 88]",
+        "mov r13, [rsp + 96]",
+        "mov r14, [rsp + 104]",
+        "mov r15, [rsp + 112]",
+        "mov rcx, [rsp + 144]",
+        "mov r11, [rsp + 160]",
+        "mov rsp, [rsp + 168]",
+        "sysretq",
+        "4:",
+        "mov rcx, [rsp + 8]",
+        "mov r11, [rsp + 80]",
+        "mov rax, [rsp]",
+        "mov rdx, [rsp + 16]",
+        "mov rbx, [rsp + 24]",
+        "mov rbp, [rsp + 32]",
+        "mov rsi, [rsp + 40]",
+        "mov rdi, [rsp + 48]",
+        "mov r8, [rsp + 56]",
+        "mov r9, [rsp + 64]",
+        "mov r10, [rsp + 72]",
+        "mov r12, [rsp + 88]",
+        "mov r13, [rsp + 96]",
+        "mov r14, [rsp + 104]",
+        "mov r15, [rsp + 112]",
+        "add rsp, 144",
+        "iretq",
+        scratch = sym SYSCALL_SCRATCH,
+        rsp0 = sym crate::gdt::RSP0_STACK,
+        cs3 = const 0x23u64,
+        ss3 = const 0x1Bu64,
+        cur_task = sym crate::task::CUR_TASK,
+        handle = sym handle_trap,
+    );
+}
+
+static mut SYSCALL_SCRATCH: u64 = 0;
+
 #[unsafe(naked)]
 pub extern "C" fn trap_common() {
     naked_asm!(

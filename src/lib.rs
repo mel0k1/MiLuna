@@ -6522,6 +6522,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             mouse::init_ps2_mouse();
             unsafe { mouse::init_mouse_interrupts(); }
             unsafe { gdt::init(); }
+            unsafe { gdt::init_syscall(); }
             unsafe { task::init(); }
             unsafe { pit::init(); }
 

@@ -1,7 +1,8 @@
 ; MiLuna ring 3 demo task (ELF64)
 ; Loaded by the kernel ELF loader at slot_base + 0x10000
 ; Entry args: rdi = 0 normal mode, 1 fault mode (ud2 on tick 5)
-; Syscalls (int 0x80 in this build): rax = 1 write(ptr,len) / 2 yield / 3 exit(code)
+; Syscalls: `syscall` instruction (fast MSR path), rax = 1 write(ptr,len) / 2 yield / 3 exit(code)
+; rcx and r11 are clobbered by the syscall instruction itself
 ; NOTE: syscall/sysret migration clobbers rcx/r11 - keep state in rbx/r12-r15 only
 
 BITS 64
@@ -52,7 +53,7 @@ _start:
     mov rax, SYS_WRITE
     lea rdi, [buf]
     mov rsi, msg_len
-    int 0x80
+    syscall
     test r8, r8
     jz .nofault
     cmp rbx, 5
@@ -65,13 +66,13 @@ _start:
     dec rcx
     jnz .burn
     mov rax, SYS_YIELD
-    int 0x80
+    syscall
     inc rbx
     cmp rbx, 400
     jl .loop
     mov rax, SYS_EXIT
     xor edi, edi
-    int 0x80
+    syscall
 .hang:
     jmp .hang
 
