@@ -235,6 +235,14 @@ pub unsafe fn set_gate_flags(vector: usize, handler_addr: u64, flags: u8) {
     }
 }
 
+// for AP bringup: the shared IDT's limit/base so the trampoline can lidt
+pub fn idtr_values() -> (u16, u64) {
+    (
+        (size_of::<[IdtEntry; IDT_ENTRIES]>() - 1) as u16,
+        core::ptr::addr_of!(IDT) as u64,
+    )
+}
+
 pub unsafe fn init_idt() {
     IDT[0].set_handler_addr(isr0 as u64);
     IDT[1].set_handler_addr(isr1 as u64);

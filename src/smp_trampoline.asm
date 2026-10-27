@@ -14,7 +14,7 @@ start:
     mov sp, 0x7C00
 
     mov eax, cr4
-    or eax, 0x20               ; PAE
+    or eax, 0x620              ; PAE | OSFXSR | OSXMMEXCPT (SSE state saves legal)
     mov cr4, eax
 
     mov eax, 0x10000           ; kernel PML4 (identity map, shared)
@@ -42,6 +42,7 @@ long_mode:
     mov gs, ax
 
     lgdt [kgdt]                ; kernel GDT (limit+base patched)
+    lidt [kidtr]               ; shared kernel IDT (LAPIC timer vector 0x20)
     mov ax, [ktss_sel]         ; this AP's TSS selector (patched)
     ltr ax
     mov rsp, [kstack]          ; private AP stack (patched)
@@ -73,3 +74,5 @@ times 4 db 0                 ; +0x0C pad
 kstack:  dq 0                 ; +0x10
 kapic:   dq 0                 ; +0x18
 kentry:  dq 0                 ; +0x20
+kidtr:   dw 0                 ; +0x28 kernel IdtPtr limit
+         dq 0                 ; +0x2A kernel IdtPtr base (unaligned: lidt reads 10 bytes)

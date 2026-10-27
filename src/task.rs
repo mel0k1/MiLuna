@@ -1,5 +1,8 @@
-// Kernel tasks and ring 3 user processes with int 0x80 syscalls
+// Kernel tasks and ring 3 user processes with syscall/sysret and per-CPU
+// preemptive scheduling: every CPU runs its own LAPIC timer tick and either
+// preempts its current task or steals a ready one from the global pool.
 
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::gdt::{USER_CS, USER_SS};
 use crate::trap::TrapFrame;
 
@@ -16,6 +19,9 @@ const PG_PRESENT: u64 = 0x1;
 const PG_WRITE: u64 = 0x2;
 const PG_USER: u64 = 0x4;
 const PG_NX: u64 = 0x8000_0000_0000_0000;
+// bit 9 is software-available in PTEs: marks a COW-shared (read-only) page
+const PG_COW: u64 = 0x200;
+const PG_ADDR: u64 = 0x000F_FFFF_FFFF_F000;
 
 // ELF64 constants
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
@@ -25,6 +31,7 @@ pub const ST_FREE: u8 = 0;
 pub const ST_READY: u8 = 1;
 pub const ST_RUNNING: u8 = 2;
 pub const ST_DEAD: u8 = 3;
+pub const ST_WAITING: u8 = 4;
 
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_YIELD: u64 = 2;
@@ -33,6 +40,7 @@ pub const SYS_FORK: u64 = 4;
 pub const SYS_NICE: u64 = 5;
 pub const SYS_EXEC: u64 = 6;
 pub const SYS_GETPID: u64 = 7;
+pub const SYS_WAIT: u64 = 8;
 
 // Embedded ELF images exec() can switch the calling task to; registered from lib.rs
 pub static mut EXEC_BINS: [&[u8]; 4] = [&[]; 4];
@@ -60,6 +68,10 @@ pub struct Task {
     pub msg_len: usize,
     pub exit_code: u32,
     pub prio: u32,
+    pub parent_pid: u32,
+    pub wait_pid: u32,
+    pub owner: u8, // apic id of the CPU running this task, 0xFF = parked/stealable
+    pub beat: u64, // millis() of the owning CPU's last scheduler tick
 }
 
 const TASK_TEMPLATE: Task = Task {
@@ -78,9 +90,148 @@ const TASK_TEMPLATE: Task = Task {
     msg_len: 0,
     exit_code: 0,
     prio: 5,
+    parent_pid: 0,
+    wait_pid: 0,
+    owner: 0xFF,
+    beat: 0,
 };
 
 pub static mut TASKS: [Task; MAX_TASKS] = [TASK_TEMPLATE; MAX_TASKS];
+
+// Per-CPU scheduler data, indexed by APIC id (0..255). The trap/syscall
+// entry paths resolve their CPU with one MMIO read of the LAPIC id register
+// and index this table directly in assembly (stride = 32 bytes).
+#[repr(C, align(8))]
+#[derive(Clone, Copy)]
+pub struct PerCpu {
+    pub cur: u64, // *mut Task running on this CPU right now (0 = idle in hlt)
+    pub rsp0_top: u64, // top of this CPU's RSP0 transit area
+    pub scratch: u64, // syscall entry scratch (user rsp)
+    pub cpu: u32, // logical cpu index for display
+}
+
+pub static mut PER_CPU: [PerCpu; 256] = [PerCpu {
+    cur: 0,
+    rsp0_top: 0,
+    scratch: 0,
+    cpu: 0,
+}; 256];
+
+// Address of the interrupt frame an idle CPU parked in is not used any
+// more: every CPU parks in a synthesized kernel frame that irets into a
+// rsp-pinned hlt loop (see idle_frame/cpu_idle_loop below).
+pub static mut IDLE_TOPS: [u64; 256] = [0; 256];
+static mut IDLE_FRAMES: [u64; 256] = [0; 256];
+
+#[repr(align(16))]
+#[derive(Clone, Copy)]
+struct IdleStack([u8; 4096]);
+static mut IDLE_STACKS: [IdleStack; MAX_TASKS] = [IdleStack([0; 4096]); MAX_TASKS];
+
+// Idle loop for any CPU: rsp is re-pinned to this CPU's idle stack top on
+// every pass (a same-privilege iretq pops but does not reload rsp, so the
+// trap path leaks a few qwords per tick).
+#[unsafe(naked)]
+extern "C" fn cpu_idle_loop() -> ! {
+    core::arch::naked_asm!(
+        "2:",
+        "mov eax, dword ptr [0xFEE00020]",
+        "shr rax, 24",
+        "shl rax, 3",
+        "lea rcx, [rip + {tops}]",
+        "mov rsp, [rcx + rax]",
+        "hlt",
+        "jmp 2b",
+        tops = sym IDLE_TOPS,
+    );
+}
+
+// Synthesized kernel-mode frame that lands a CPU in cpu_idle_loop. Built
+// 1KB below the stack top: timer ticks taken while idle push their frames
+// at the very top, so the idle frame must live out of their reach.
+unsafe fn idle_frame(me: usize) -> u64 {
+    let idx = PER_CPU[me].cpu as usize;
+    if idx >= MAX_TASKS {
+        return 0;
+    }
+    let top = (IDLE_STACKS[idx].0.as_ptr() as u64) + 4096;
+    let fp = (top - 1024) as *mut u64;
+    core::ptr::write_bytes(fp, 0, 24);
+    *fp.add(18) = cpu_idle_loop as u64; // rip
+    *fp.add(19) = 0x08; // cs (kernel)
+    *fp.add(20) = 0x202; // rflags (IF set)
+    *fp.add(21) = top - 8; // rsp
+    *fp.add(22) = 0x10; // ss
+    IDLE_TOPS[me] = top;
+    fp as u64
+}
+
+// Copy-on-write reference counts, one per user-region 4K frame
+// (MAX_TASKS slots * 512 pages). 0 = exclusive/unmapped.
+static REFCNT: [AtomicU32; MAX_TASKS * 512] = [const { AtomicU32::new(0) }; MAX_TASKS * 512];
+
+// Reset a wedged task: a task marked RUNNING whose owner CPU stopped
+// ticking it (lost steal) is made stealable again. Runs from the BSP's
+// once-per-second timer housekeeping - independent of any task. Safe:
+// a stale beat means the owner's timer died BEFORE overwriting the task's
+// saved_rsp, so the last parked frame is still valid for a re-steal.
+static mut WATCHDOG_LAST: u64 = 0;
+pub fn bsp_apic() -> u8 {
+    unsafe { BSP_APIC }
+}
+
+pub unsafe fn wedged_tasks_reset() {
+    let now = crate::timer::millis();
+    if now.wrapping_sub(WATCHDOG_LAST) < 1000 {
+        return;
+    }
+    WATCHDOG_LAST = now;
+    for i in 0..MAX_TASKS {
+        let t = &mut TASKS[i] as *mut Task;
+        if (*t).state != ST_RUNNING || (*t).beat == 0 {
+            continue;
+        }
+        if now.wrapping_sub((*t).beat) < 3000 {
+            continue;
+        }
+        // find and clear the dead owner's registration
+        for c in 0..256 {
+            if PER_CPU[c].cur == t as u64 {
+                PER_CPU[c].cur = 0;
+                break;
+            }
+        }
+        (*t).state = ST_READY;
+        (*t).owner = 0xFF;
+        (*t).beat = 0;
+        OUTPUT_DIRTY = true;
+    }
+}
+
+pub fn cpu_cur() -> *mut Task {
+    unsafe { PER_CPU[crate::lapic::id() as usize].cur as *mut Task }
+}
+
+// register an AP's per-CPU area before it is woken (called from smp::init)
+pub unsafe fn set_ap_cpu(cpu: u32, apic: u8, rsp0_top: u64) {
+    PER_CPU[apic as usize].rsp0_top = rsp0_top;
+    PER_CPU[apic as usize].cpu = cpu;
+}
+
+static SCHED_LOCK: AtomicBool = AtomicBool::new(false);
+
+fn sched_lock() {
+    while SCHED_LOCK
+        .compare_exchange_weak(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+}
+
+fn sched_unlock() {
+    SCHED_LOCK.store(false, Ordering::SeqCst);
+}
 
 #[repr(align(16))]
 #[derive(Clone, Copy)]
@@ -88,11 +239,9 @@ struct KStack([u8; KSTACK_SIZE]);
 
 static mut KSTACKS: [KStack; MAX_TASKS] = [KStack([0; KSTACK_SIZE]); MAX_TASKS];
 
-#[no_mangle]
-pub static mut CUR_TASK: *mut Task = core::ptr::null_mut();
-
 static mut SCHED_READY: bool = false;
 static mut NEXT_PID: u32 = 10;
+static mut BSP_APIC: u8 = 0;
 pub static mut OUTPUT_DIRTY: bool = false;
 
 pub unsafe fn init() {
@@ -108,7 +257,13 @@ pub unsafe fn init() {
     t.prio = 1;
     let n = b"miluna-gui";
     t.name[..n.len()].copy_from_slice(n);
-    CUR_TASK = t as *mut Task;
+    // BSP per-CPU area: the GUI task starts out running here. LAPIC_BASE may
+    // not be parsed yet - lapic::reg falls back to the default 0xFEE00000.
+    let bsp = crate::lapic::id();
+    BSP_APIC = bsp;
+    PER_CPU[bsp as usize].cur = t as *mut Task as u64;
+    PER_CPU[bsp as usize].rsp0_top = core::ptr::addr_of!(crate::gdt::RSP0_STACK) as u64 + 8192;
+    PER_CPU[bsp as usize].cpu = 0;
     SCHED_READY = true;
 }
 
@@ -168,64 +323,246 @@ fn parse_u64(b: &[u8], off: usize) -> u64 {
     ])
 }
 
+// COW frame refcount helpers. Frame index = (phys - USER_BASE) >> 12.
+unsafe fn frame_incref(phys: u64) {
+    let idx = ((phys - USER_BASE as u64) >> 12) as usize;
+    if idx < MAX_TASKS * 512 {
+        REFCNT[idx].fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+unsafe fn frame_decref(phys: u64) -> u32 {
+    let idx = ((phys - USER_BASE as u64) >> 12) as usize;
+    if idx < MAX_TASKS * 512 {
+        REFCNT[idx].fetch_sub(1, Ordering::SeqCst)
+    } else {
+        0
+    }
+}
+
+// Drop COW references held by a slot's page table (task death or slot
+// recycling). Only PRESENT entries hold references to other pages; entries
+// with PG_COW but present=0 are clone-target markers for this slot's own
+// pages and pin nothing.
+unsafe fn drop_slot_pt(slot: usize) -> u32 {
+    let pt = (USER_PT_BASE + slot * 0x1000) as *mut u64;
+    let mut refs = 0u32;
+    for i in 0..512 {
+        let e = core::ptr::read_volatile(pt.add(i));
+        if e & PG_PRESENT != 0 && e & PG_COW != 0 {
+            let _ = frame_decref(e & PG_ADDR);
+            refs += 1;
+        }
+    }
+    refs
+}
+
+// release a dying task's COW references so its slot can be recycled and
+// the pages it shared with fork relatives get unpinned
+unsafe fn task_release_cow(slot: usize) {
+    let _ = drop_slot_pt(slot);
+}
+
+// a dead slot whose pages are still COW-referenced by living fork children
+// must not be recycled until those references are gone (the child would
+// otherwise execute rewritten physical pages)
+unsafe fn slot_reusable(slot: usize) -> bool {
+    let pt = (USER_PT_BASE + slot * 0x1000) as *mut u64;
+    for i in 0..512 {
+        let e = core::ptr::read_volatile(pt.add(i));
+        if e & PG_PRESENT != 0 && e & PG_COW != 0 {
+            let idx = (((e & PG_ADDR) - USER_BASE as u64) >> 12) as usize;
+            if idx < MAX_TASKS * 512 && REFCNT[idx].load(Ordering::SeqCst) > 0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+// Page fault fixup for copy-on-write pages. Called from the #PF path for
+// ring 3 write faults: CR2 selects the slot/page, the PTE must be present
+// with PG_COW set. Clones the frame when it is still shared, otherwise
+// just restores writability. Returns true when the fault was handled.
+pub fn cow_fix(f: &mut TrapFrame) -> bool {
+    if f.slot1 & 2 == 0 {
+        return false; // not a write fault
+    }
+    let cr2: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
+    }
+    if cr2 < USER_BASE as u64 || cr2 >= (USER_BASE + MAX_TASKS * USER_SLOT) as u64 {
+        return false;
+    }
+    let slot = ((cr2 as usize - USER_BASE) / USER_SLOT) as usize;
+    let idx = ((cr2 >> 12) & 0x1FF) as usize;
+    unsafe {
+        let pt = (USER_PT_BASE + slot * 0x1000) as *mut u64;
+        let pte = core::ptr::read_volatile(pt.add(idx));
+        if pte & PG_PRESENT == 0 || pte & PG_COW == 0 {
+            return false;
+        }
+        let phys = pte & PG_ADDR;
+        // a fresh frame for this task comes from its own slot: a PT index is
+        // free when it was never used (present=0, no marker). Cloned-to
+        // pages carry a PG_COW marker with present=0 so they are skipped.
+        let mut free_i = usize::MAX;
+        for i in 0..512 {
+            if core::ptr::read_volatile(pt.add(i)) & (PG_PRESENT | PG_COW) == 0 {
+                free_i = i;
+                break;
+            }
+        }
+        if free_i == usize::MAX {
+            return false; // slot completely full - kill via caller
+        }
+        let fidx = ((phys - USER_BASE as u64) >> 12) as usize;
+        let newfl = (pte & (PG_NX | PG_USER)) | PG_PRESENT | PG_WRITE;
+        if fidx < MAX_TASKS * 512 && REFCNT[fidx].load(Ordering::SeqCst) > 1 {
+            // the other fork side still maps the old frame: clone it into a
+            // free page of this slot and mark that PT entry as taken
+            REFCNT[fidx].fetch_sub(1, Ordering::SeqCst);
+            let nphys = (USER_BASE + slot * USER_SLOT + free_i * 0x1000) as u64;
+            core::ptr::copy_nonoverlapping(phys as *const u8, nphys as *mut u8, 0x1000);
+            core::ptr::write_volatile(pt.add(free_i), nphys | PG_COW); // marker
+            core::ptr::write_volatile(pt.add(idx), nphys | newfl);
+        } else {
+            // last reference (or uncounted): reuse the frame in place
+            if fidx < MAX_TASKS * 512 {
+                REFCNT[fidx].store(0, Ordering::SeqCst);
+            }
+            core::ptr::write_volatile(pt.add(idx), phys | newfl);
+        }
+        flush_tlb();
+    }
+    true
+}
+
+// Wake a task blocked in wait() because `dead` (its child) just exited.
+// The exit code is written directly into the waiter's parked syscall frame,
+// so it resumes as if wait() had returned. The zombie is reaped here.
+unsafe fn wake_waiters(dead: *mut Task) {
+    for i in 0..MAX_TASKS {
+        let w = &mut TASKS[i] as *mut Task;
+        if (*w).state != ST_WAITING || (*w).pid != (*dead).parent_pid {
+            continue;
+        }
+        if (*w).wait_pid != 0 && (*w).wait_pid != (*dead).pid {
+            continue;
+        }
+        let fp = (*w).saved_rsp as *mut TrapFrame;
+        (*fp).rax = (*dead).exit_code as u64;
+        (*w).wait_pid = 0;
+        (*w).state = ST_READY;
+        (*w).owner = 0xFF; // unowned: any CPU may pick the woken waiter
+        (*dead).state = ST_FREE;
+        OUTPUT_DIRTY = true;
+        break;
+    }
+}
+
+// Per-CPU preemptive scheduler with work stealing. Called from the LAPIC
+// timer path on every CPU and from yield/exit/wait syscalls. All callers
+// run with interrupts off; the spinlock guards the global ready set.
+//
+// Ownership discipline: a task is owned by exactly the CPU whose PER_CPU.cur
+// points at it (Task.owner mirrors that apic id). A CPU disowns its task at
+// the start of every scheduling decision and re-picks from the READY + unowned
+// pool - so idle CPUs can safely steal work that another CPU just parked.
+// A task is never picked while it is RUNNING on another CPU. When a CPU has
+// nothing to run (its task died, or it was idle already) it parks in a
+// synthesized kernel frame that lands in the rsp-pinned hlt loop.
 pub fn schedule(f: &mut TrapFrame) -> u64 {
     unsafe {
         if !SCHED_READY {
             return 0;
         }
-        let cur = CUR_TASK;
-        (*cur).saved_rsp = f as *mut TrapFrame as u64;
-        if (*cur).state == ST_RUNNING {
-            (*cur).state = ST_READY;
+        sched_lock();
+        let me = crate::lapic::id() as usize;
+        let me8 = me as u8;
+        let cur = PER_CPU[me].cur as *mut Task;
+        if cur.is_null() {
+            // idle CPU tick: the interrupted frame is the hlt loop frame
+        } else {
+            (*cur).saved_rsp = f as *mut TrapFrame as u64;
+            if (*cur).state == ST_RUNNING {
+                (*cur).state = ST_READY;
+            }
+            // disown: from here on the task is parked and stealable
+            (*cur).owner = 0xFF;
+            PER_CPU[me].cur = 0;
         }
-        // highest priority among ready tasks (0 = none ready)
+        // highest priority among READY, unowned tasks (0 = none ready).
+        // Slot 0 (miluna-gui, kernel task on the boot stack) is pinned to the
+        // BSP: its frames live on the boot stack, so migrating it to an AP is
+        // not safe. Only the BSP ever picks it.
         let mut best: u32 = 0;
         for i in 0..MAX_TASKS {
-            if TASKS[i].state == ST_READY && TASKS[i].prio > best {
+            if i == 0 && me8 != BSP_APIC {
+                continue;
+            }
+            if TASKS[i].state == ST_READY && TASKS[i].owner == 0xFF && TASKS[i].prio > best {
                 best = TASKS[i].prio;
             }
         }
         if best == 0 {
-            if (*cur).state == ST_READY {
+            if !cur.is_null() && (*cur).state == ST_READY {
+                // keep running what we were interrupted in
+                (*cur).owner = me8;
                 (*cur).state = ST_RUNNING;
+                PER_CPU[me].cur = cur as u64;
+                sched_unlock();
                 return 0;
             }
-            let t0 = &mut TASKS[0] as *mut Task;
-            if t0 != cur && (*t0).state == ST_READY {
-                (*t0).state = ST_RUNNING;
-                CUR_TASK = t0;
-                return (*t0).saved_rsp;
-            }
-            if (*cur).state == ST_READY {
-                (*cur).state = ST_RUNNING;
-            }
-            return 0;
+            // nothing to run (current task died, or idle CPU, nothing to steal)
+            let idle = idle_frame(me);
+            sched_unlock();
+            return idle;
         }
-        // round-robin among tasks with the top priority, starting after the current slot
-        let cur_slot = (*cur).slot;
+        // round-robin among tasks with the top priority, starting after the
+        // current slot; idle CPUs scan from slot 0 (steal path)
+        let start = if cur.is_null() { MAX_TASKS - 1 } else { (*cur).slot };
         let mut next: *mut Task = core::ptr::null_mut();
         for k in 1..=MAX_TASKS {
-            let i = (cur_slot + k) % MAX_TASKS;
-            if TASKS[i].state == ST_READY && TASKS[i].prio == best {
+            let i = (start + k) % MAX_TASKS;
+            if i == 0 && me8 != BSP_APIC {
+                continue;
+            }
+            if TASKS[i].state == ST_READY && TASKS[i].owner == 0xFF && TASKS[i].prio == best {
                 next = &mut TASKS[i] as *mut Task;
                 break;
             }
         }
         if next.is_null() {
-            if (*cur).state == ST_READY {
+            if !cur.is_null() && (*cur).state == ST_READY {
+                (*cur).owner = me8;
                 (*cur).state = ST_RUNNING;
+                PER_CPU[me].cur = cur as u64;
+                sched_unlock();
+                return 0;
             }
-            return 0;
+            let idle = idle_frame(me);
+            sched_unlock();
+            return idle;
         }
+        (*next).owner = me8;
         (*next).state = ST_RUNNING;
-        CUR_TASK = next;
+        if next != cur {
+            // a full CR3 reload on every switch keeps TLBs coherent for
+            // task migration between CPUs (spawn/fork/exec/COW all rewrite
+            // page tables on the CPU that ran the caller)
+            flush_tlb();
+        }
+        PER_CPU[me].cur = next as u64;
+        sched_unlock();
         (*next).saved_rsp
     }
 }
 
 pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
     unsafe {
-        let cur = CUR_TASK;
+        let cur = cpu_cur();
         match f.rax {
             SYS_WRITE => {
                 let mut n = 0usize;
@@ -250,13 +587,22 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 (*cur).exit_code = f.rdi as u32;
                 (*cur).state = ST_DEAD;
                 OUTPUT_DIRTY = true;
+                // release this task's COW references: pages shared with fork
+                // relatives get unpinned, the slot becomes recyclable
+                unsafe { task_release_cow((*cur).slot) };
+                // wake a parent blocked in wait(); it reaps the zombie and
+                // receives the exit code in its parked frame
+                wake_waiters(cur);
                 return schedule(f);
             }
             SYS_FORK => {
                 let cslot = (*cur).slot;
                 let mut slot = usize::MAX;
                 for i in 1..MAX_TASKS {
-                    if i != cslot && (TASKS[i].state == ST_FREE || TASKS[i].state == ST_DEAD) {
+                    if i != cslot
+                        && (TASKS[i].state == ST_FREE
+                            || (TASKS[i].state == ST_DEAD && slot_reusable(i)))
+                    {
                         slot = i;
                         break;
                     }
@@ -265,20 +611,31 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                     f.rax = u64::MAX;
                     return 0;
                 }
-                // build the child's PT first (copy of the parent's, retargeted to the
-                // child's own pages) and hook it in - the 2MB copy below would fault
-                // on a not-yet-mapped slot otherwise
-                let pt_src = (USER_PT_BASE + cslot * 0x1000) as *const u64;
+                // copy-on-write fork: the child's PT points at the PARENT's
+                // physical pages - every present page (code, rodata, data,
+                // stack) is shared read-only with PG_COW set and gains a
+                // reference; the first write from either side faults and
+                // cow_fix() clones the page. The reference counts also pin
+                // the parent's physical pages while the child is alive.
+                let pt_src = (USER_PT_BASE + cslot * 0x1000) as *mut u64;
                 let pt_dst = (USER_PT_BASE + slot * 0x1000) as *mut u64;
+                // the slot may belong to a dead task whose PT still holds COW
+                // references - release them before zeroing
+                let _ = drop_slot_pt(slot);
                 core::ptr::write_bytes(pt_dst as *mut u8, 0, 0x1000);
+                // share EVERY present page (code, rodata, data, stack):
+                // writable pages lose W and gain PG_COW on both sides,
+                // read-only pages just gain the marker - the refcount pins
+                // the parent's physical pages while the child is alive
                 for i in 0..512 {
                     let e = core::ptr::read_volatile(pt_src.add(i));
                     if e & PG_PRESENT == 0 {
                         continue;
                     }
-                    let idx = ((e >> 12) & 0x1FF) as usize;
-                    let phys = (USER_BASE + slot * USER_SLOT + idx * 0x1000) as u64;
-                    core::ptr::write_volatile(pt_dst.add(i), phys | (e & (0xFFF | PG_NX)));
+                    let sh = (e & !PG_WRITE) | PG_COW;
+                    core::ptr::write_volatile(pt_src.add(i), sh);
+                    core::ptr::write_volatile(pt_dst.add(i), sh);
+                    frame_incref(e & PG_ADDR);
                 }
                 let pdt = 0x12000 as *mut u64;
                 core::ptr::write_volatile(
@@ -286,21 +643,6 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                     ((USER_PT_BASE + slot * 0x1000) as u64) | PG_PRESENT | PG_WRITE | PG_USER,
                 );
                 flush_tlb();
-                // duplicate only the pages that actually exist in the parent's
-                // address space - unmapped holes between segments must not fault
-                let src_base = (USER_BASE + cslot * USER_SLOT) as u64;
-                let dst_base = (USER_BASE + slot * USER_SLOT) as u64;
-                for i in 0..512 {
-                    let e = core::ptr::read_volatile(pt_src.add(i));
-                    if e & PG_PRESENT == 0 {
-                        continue;
-                    }
-                    core::ptr::copy_nonoverlapping(
-                        (src_base + (i as u64) * 0x1000) as *const u8,
-                        (dst_base + (i as u64) * 0x1000) as *mut u8,
-                        0x1000,
-                    );
-                }
                 let t = &mut TASKS[slot] as *mut Task;
                 core::ptr::copy_nonoverlapping((*cur).fpu.as_ptr(), (*t).fpu.as_mut_ptr(), 512);
                 (*t).kstack_top = (KSTACKS[slot].0.as_ptr() as usize + KSTACK_SIZE) as u64;
@@ -314,12 +656,15 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 (*t).pid = NEXT_PID;
                 NEXT_PID += 1;
                 (*t).name = (*cur).name;
+                (*t).parent_pid = (*cur).pid;
+                (*t).wait_pid = 0;
+                (*t).owner = 0xFF; // parked, ready to be picked by any CPU
                 // child frame: copy of the parent's; the syscall entry stored the
                 // RETURN address in rip (past the syscall instruction) already,
                 // so the child resumes right after fork() with rax = 0.
                 // rip and rsp are parent-slot linear addresses - rebase them to the
-                // child's slot, otherwise the child would run the parent's image
-                // through the shared address space until that slot gets reused
+                // child's slot; the COW page tables map them onto parent pages
+                // until either side writes.
                 let pbase = (USER_BASE + cslot * USER_SLOT) as u64;
                 let cbase = (USER_BASE + slot * USER_SLOT) as u64;
                 let fp = ((*t).kstack_top - 192) as *mut TrapFrame;
@@ -339,6 +684,42 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
             SYS_GETPID => {
                 f.rax = (*cur).pid as u64;
             }
+            SYS_WAIT => {
+                // rdi = child pid to wait for, 0 = any child. If the child is
+                // already dead, reap it and return its code; otherwise block
+                // until exit() (or kill_fault) wakes this task.
+                let want = f.rdi as u32;
+                let mut dead: *mut Task = core::ptr::null_mut();
+                let mut have_child = false;
+                for i in 1..MAX_TASKS {
+                    let t = &mut TASKS[i] as *mut Task;
+                    if (*t).state == ST_FREE || (*t).parent_pid != (*cur).pid {
+                        continue;
+                    }
+                    if want != 0 && (*t).pid != want {
+                        continue;
+                    }
+                    if (*t).state == ST_DEAD {
+                        dead = t;
+                        break;
+                    }
+                    have_child = true;
+                }
+                if !dead.is_null() {
+                    f.rax = (*dead).exit_code as u64;
+                    (*dead).state = ST_FREE; // reaped, slot reusable
+                    OUTPUT_DIRTY = true;
+                    return 0;
+                }
+                if !have_child {
+                    f.rax = u64::MAX; // no such child
+                    return 0;
+                }
+                (*cur).wait_pid = want;
+                (*cur).state = ST_WAITING;
+                OUTPUT_DIRTY = true;
+                return schedule(f);
+            }
             SYS_EXEC => {
                 let idx = f.rdi as usize;
                 let bins = core::ptr::addr_of!(EXEC_BINS) as *const &[u8];
@@ -350,6 +731,12 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 let bin: &[u8] = *bins.add(idx);
                 let name: &[u8] = *names.add(idx);
                 let slot = (*cur).slot;
+                // a task with COW children shares its physical pages with
+                // them - exec would rewrite that code out from under them
+                if !slot_reusable(slot) {
+                    f.rax = u64::MAX;
+                    return 0;
+                }
                 if !elf_valid(bin) || load_elf(slot, bin) < 0 {
                     f.rax = u64::MAX;
                     return 0;
@@ -384,7 +771,7 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
 
 pub fn kill_fault(f: &mut TrapFrame, vec: u64, err: u64) -> u64 {
     unsafe {
-        let cur = CUR_TASK;
+        let cur = cpu_cur();
         let cr2 = if vec == 14 {
             let v: u64;
             core::arch::asm!("mov {}, cr2", out(reg) v, options(nomem, nostack));
@@ -421,6 +808,10 @@ pub fn kill_fault(f: &mut TrapFrame, vec: u64, err: u64) -> u64 {
         (*cur).exit_code = (256 + vec) as u32;
         (*cur).state = ST_DEAD;
         OUTPUT_DIRTY = true;
+        // a faulting task is dead too: release its COW references and hand
+        // its exit code to a waiting parent
+        unsafe { task_release_cow((*cur).slot) };
+        wake_waiters(cur);
     }
     schedule(f)
 }
@@ -468,7 +859,7 @@ pub fn spawn_elf(bin: &[u8], name: &[u8], fault: bool, prio: u32) -> i32 {
         }
         let mut slot = usize::MAX;
         for i in 1..MAX_TASKS {
-            if TASKS[i].state == ST_FREE || TASKS[i].state == ST_DEAD {
+            if TASKS[i].state == ST_FREE || (TASKS[i].state == ST_DEAD && unsafe { slot_reusable(i) }) {
                 slot = i;
                 break;
             }
@@ -495,6 +886,9 @@ pub fn spawn_elf(bin: &[u8], name: &[u8], fault: bool, prio: u32) -> i32 {
         (*t).pid = NEXT_PID;
         NEXT_PID += 1;
         (*t).prio = prio.clamp(1, 9);
+        (*t).parent_pid = 0; // spawned by the kernel, nobody waits on these
+        (*t).wait_pid = 0;
+        (*t).owner = 0xFF; // parked, ready to be picked by any CPU
         for j in 0..16 {
             (*t).name[j] = if j < name.len() { name[j] } else { 0 };
         }
@@ -539,6 +933,9 @@ unsafe fn load_elf(slot: usize, bin: &[u8]) -> i32 {
     if e_entry >= (USER_SLOT - 64 * 1024) as u64 {
         return -1;
     }
+    // release COW references the old image still holds (exec in place,
+    // or a dead task's slot being recycled)
+    drop_slot_pt(slot);
     let pt = (USER_PT_BASE + slot * 0x1000) as *mut u64;
     core::ptr::write_bytes(pt as *mut u8, 0, 0x1000);
     // hook slot PT into PDT0[504+slot]: present | write | user
@@ -626,6 +1023,7 @@ pub fn state_name(s: u8) -> &'static str {
         ST_RUNNING => "Running",
         ST_READY => "Ready",
         ST_DEAD => "Dead",
+        ST_WAITING => "Waiting",
         _ => "Free",
     }
 }
@@ -687,6 +1085,7 @@ pub fn list_tasks() -> &'static str {
         put_pad(b"PID", 5);
         put_pad(b"NAME", 12);
         put_pad(b"STATE", 9);
+        put_pad(b"CPU", 4);
         put_pad(b"PRIO", 5);
         put_pad(b"TICKS", 7);
         put_pad(b"MESSAGE", 20);
@@ -719,6 +1118,16 @@ pub fn list_tasks() -> &'static str {
             }
             put_pad(&t.name[..nend], 12);
             put_pad(state_name(t.state).as_bytes(), 9);
+            // which CPU runs this task right now (0..3), '-' otherwise
+            let mut cpu_c = b'-';
+            let tp = &TASKS[i] as *const Task as u64;
+            for c in 0..256 {
+                if PER_CPU[c].cur == tp {
+                    cpu_c = b'0' + PER_CPU[c].cpu as u8;
+                    break;
+                }
+            }
+            put_pad(&[cpu_c], 4);
             let mut pv = t.prio as u64;
             let mut pd = [0u8; 4];
             let mut pn = 0;
@@ -754,29 +1163,41 @@ pub fn list_tasks() -> &'static str {
             }
             put_pad(&num2[..tn], 7);
             if t.state == ST_DEAD {
-                let mut code = [0u8; 12];
-                let cl = {
-                    let cv = t.exit_code as u64;
-                    let mut n = 0;
-                    let mut v = cv;
-                    if v == 0 {
-                        code[0] = b'0';
-                        n = 1;
+                // faulted tasks carry their fault details in msg ("fault#14
+                // err=6 cr2=...") - show them, plain exits just get the code
+                let is_fault = t.exit_code >= 256 && t.msg_len > 0 && t.msg[0] == b'f';
+                if is_fault {
+                    let mlen = t.msg_len.min(64);
+                    let mut m = [0u8; 64];
+                    for k in 0..mlen {
+                        m[k] = if t.msg[k] == 0 { b' ' } else { t.msg[k] };
                     }
-                    while v > 0 {
-                        code[n] = b'0' + (v % 10) as u8;
-                        v /= 10;
-                        n += 1;
-                    }
-                    let mut rev = [0u8; 12];
-                    for k in 0..n {
-                        rev[k] = code[n - 1 - k];
-                    }
-                    code = rev;
-                    n
-                };
-                put_pad(b"exit ", 5);
-                put_pad(&code[..cl], 40);
+                    put_pad(&m[..mlen], 40);
+                } else {
+                    let mut code = [0u8; 12];
+                    let cl = {
+                        let cv = t.exit_code as u64;
+                        let mut n = 0;
+                        let mut v = cv;
+                        if v == 0 {
+                            code[0] = b'0';
+                            n = 1;
+                        }
+                        while v > 0 {
+                            code[n] = b'0' + (v % 10) as u8;
+                            v /= 10;
+                            n += 1;
+                        }
+                        let mut rev = [0u8; 12];
+                        for k in 0..n {
+                            rev[k] = code[n - 1 - k];
+                        }
+                        code = rev;
+                        n
+                    };
+                    put_pad(b"exit ", 5);
+                    put_pad(&code[..cl], 40);
+                }
             } else {
                 let mlen = t.msg_len.min(64);
                 let mut m = [0u8; 64];

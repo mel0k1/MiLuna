@@ -1,7 +1,8 @@
 // SMP bringup: copy the trampoline to 0x8000, patch per-AP parameters,
 // wake each AP with INIT + SIPI, wait for it to report online.
-// Phase 1: APs enter long mode, load their own TSS and park in a hlt loop;
-// per-CPU scheduling is the next roadmap step.
+// APs enter long mode, load their own TSS, enable the LAPIC and start the
+// per-CPU timer; they park in an interruptible hlt loop and steal READY
+// tasks from the global pool on their timer ticks (per-CPU scheduling).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,8 +24,9 @@ static ONLINE: [AtomicBool; MAX_APS] = [
 struct ApStack([u8; 4096]);
 static mut AP_STACKS: [ApStack; MAX_APS] = [ApStack([0; 4096]); MAX_APS];
 
-// Per-AP TSS and private RSP0 stacks (APs don't run ring 3 yet, but the
-// structures are ready for per-CPU scheduling).
+// Per-AP TSS and private RSP0 transit stacks: ring-3 traps on an AP land in
+// its own RSP0 area via its TSS, and trap_common copies the iret portion out
+// of task::PER_CPU[apic].rsp0_top.
 #[repr(align(16))]
 #[derive(Clone, Copy)]
 struct ApRsp0([u8; 8192]);
@@ -36,7 +38,10 @@ static mut AP_IDS: [u8; MAX_APS] = [0; MAX_APS];
 unsafe fn wr_u16(a: u64, v: u16) { core::ptr::write_volatile(a as *mut u16, v) }
 unsafe fn wr_u64(a: u64, v: u64) { core::ptr::write_unaligned(a as *mut u64, v) }
 
-// AP entry point, called from the trampoline in long mode with interrupts off
+// AP entry point, called from the trampoline in long mode.
+// Enables the LAPIC + per-CPU timer, then parks with interrupts ON: the
+// timer tick runs the per-CPU scheduler which either steals a READY task
+// or returns the CPU to this hlt loop.
 pub extern "C" fn smp_ap_entry(apic_id: u64) -> ! {
     for i in 0..MAX_APS {
         if unsafe { AP_IDS[i] } as u64 == apic_id {
@@ -44,11 +49,39 @@ pub extern "C" fn smp_ap_entry(apic_id: u64) -> ! {
             break;
         }
     }
-    loop {
-        unsafe {
-            core::arch::asm!("cli", "hlt", options(nomem, nostack));
+    unsafe {
+        crate::lapic::enable();
+        crate::lapic::timer_start_ap();
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+    // The park loop resets rsp every iteration: the trap path's iretq leaves
+    // the stack a few qwords lower than it found it (same-privilege iret pops
+    // but does not reload rsp), which would otherwise eat the 4K AP stack at
+    // 50 ticks per second.
+    let top = unsafe { AP_STACKS[ap_index(apic_id)].0.as_ptr() as u64 + 4096 };
+    ap_park(top)
+}
+
+// interruptible park loop; rsp is pinned to the AP stack top on every pass
+// (rdi = stack top per SysV, preserved across interrupts by the trap frame)
+#[unsafe(naked)]
+extern "C" fn ap_park(_top: u64) -> ! {
+    core::arch::naked_asm!(
+        "1:",
+        "mov rsp, rdi",
+        "hlt",
+        "jmp 1b",
+    );
+}
+
+// slot index of an AP by its APIC id (for the private stack lookup)
+fn ap_index(apic_id: u64) -> usize {
+    for i in 0..MAX_APS {
+        if unsafe { AP_IDS[i] } as u64 == apic_id {
+            return i;
         }
     }
+    0
 }
 
 pub fn online_count() -> usize {
@@ -90,8 +123,11 @@ pub unsafe fn init() {
     }
 
     // register per-AP TSS descriptors in the shared GDT (selectors 0x40..0x70)
+    // and per-CPU scheduler areas (indexed by APIC id); logical cpu indices
+    // start at 1 - index 0 is the BSP
     for i in 0..ntargets {
         crate::gdt::write_ap_tss(i, AP_RSP0[i].0.as_ptr() as u64 + 8192);
+        crate::task::set_ap_cpu(i as u32 + 1, targets[i], AP_RSP0[i].0.as_ptr() as u64 + 8192);
     }
     crate::gdt::reload();
 
@@ -109,6 +145,10 @@ pub unsafe fn init() {
         wr_u64(p + 0x10, (AP_STACKS[i].0.as_ptr() as u64) + 4096); // kstack
         wr_u64(p + 0x18, id as u64); // kapic
         wr_u64(p + 0x20, entry); // kentry
+        // kidtr: [limit u16][base u64] - APs load the shared IDT (LAPIC timer)
+        let (ilim, ibase) = crate::idt::idtr_values();
+        wr_u16(p + 0x28, ilim);
+        wr_u64(p + 0x2A, ibase);
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
         crate::lapic::bringup(id, 0x08);

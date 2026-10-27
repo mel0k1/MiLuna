@@ -32,7 +32,7 @@ struct GdtTable([u64; 16]);
 static mut GDT: GdtTable = GdtTable([0; 16]);
 
 #[repr(C, align(16))]
-struct Rsp0Area([u8; 8192]);
+pub struct Rsp0Area([u8; 8192]);
 
 #[unsafe(no_mangle)]
 pub static mut RSP0_STACK: Rsp0Area = Rsp0Area([0; 8192]);

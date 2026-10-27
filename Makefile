@@ -82,7 +82,7 @@ target/grub_core.img: target/grub_embed.cfg
 	grub-mkimage -O i386-pc -d $(GRUB_I386) -p '(,msdos1)/' -c target/grub_embed.cfg \
 		-o $@ biosdisk part_msdos fat multiboot2 boot echo all_video vbe
 
-USER_PROGS = hello nx fork prio exec
+USER_PROGS = hello nx fork prio exec cow wait smp
 USER_ELFS = $(addprefix target/,$(addsuffix .elf,$(USER_PROGS)))
 
 target/%.elf: src/user/%.asm src/user/elf.ld

@@ -58,6 +58,9 @@ static NX_BIN: &[u8] = include_bytes!("../target/nx.elf");
 static FORK_BIN: &[u8] = include_bytes!("../target/fork.elf");
 static PRIO_BIN: &[u8] = include_bytes!("../target/prio.elf");
 static EXEC_BIN: &[u8] = include_bytes!("../target/exec.elf");
+static COW_BIN: &[u8] = include_bytes!("../target/cow.elf");
+static WAIT_BIN: &[u8] = include_bytes!("../target/wait.elf");
+static SMP_BIN: &[u8] = include_bytes!("../target/smp.elf");
 
 pub static mut NET_APP_REQUEST: u8 = 0;
 
@@ -5289,9 +5292,42 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             "spawn failed"
                         }
                     }
+                    "cow" => {
+                        let pid = task::spawn_elf(COW_BIN, b"cow-demo", false, 5);
+                        if pid >= 0 {
+                            "cow-demo spawned: forks copy-on-write, both sides write the same page."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
+                    "wait" => {
+                        let pid = task::spawn_elf(WAIT_BIN, b"wait-demo", false, 5);
+                        if pid >= 0 {
+                            "wait-demo spawned: the parent blocks in wait() until the child exits 42."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
+                    "smp" => {
+                        let mut ok = 0;
+                        for n in 0..4 {
+                            let mut name = [0u8; 16];
+                            let base = b"smp-burn";
+                            name[..base.len()].copy_from_slice(base);
+                            name[base.len()] = b'0' + n;
+                            if task::spawn_elf(SMP_BIN, &name, false, 5) >= 0 {
+                                ok += 1;
+                            }
+                        }
+                        if ok == 4 {
+                            "spawned 4 cpu-bound smp-burn tasks - idle CPUs steal them (see `tasks` CPU column)."
+                        } else {
+                            "spawn failed (not enough task slots)"
+                        }
+                    }
                     "tasks" => task::list_tasks(),
                     "cpuinfo" => cpu_info(),
-                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, tasks - ring 3 processes\n  SMP:           cpuinfo - detected CPUs and APIC ids",
+                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, tasks - ring 3 processes\n  SMP:           cpuinfo - CPUs and APIC ids; smp - 4 burn tasks for steal; cow - COW fork demo; wait - wait/exit demo",
                     "ver" => "MiLuna 1.0.0",
                     "fetch" | "neofetch" => fetch_info(),
                     "mem" => mem_info(),
@@ -6621,6 +6657,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             unsafe { pit::init(); }
             unsafe { acpi::init(); }
             unsafe { lapic::enable(); }
+            unsafe { lapic::timer_init_bsp(); }
             unsafe { smp::init(); }
 
             let mut cursor_x = 400usize;
@@ -9024,7 +9061,71 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     }
 }
 
+// kernel panic handler: dump the message + location to the QEMU debugcon
+// (port 0xE9) so headless E2E runs show what went wrong, then spin.
+unsafe fn e9_put(b: u8) {
+    core::arch::asm!(
+        "out dx, al",
+        in("dx") 0xE9u16,
+        in("al") b,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
+struct E9W;
+impl core::fmt::Write for E9W {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        unsafe {
+            for &c in s.as_bytes() {
+                e9_put(c);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    loop {}
+fn panic(info: &PanicInfo) -> ! {
+    unsafe {
+        let s = b"\r\n[RUST-PANIC] ";
+        for &c in s {
+            e9_put(c);
+        }
+        {
+            use core::fmt::Write;
+            let _ = write!(E9W, "{}", info.message());
+        }
+        if let Some(loc) = info.location() {
+            let l = b" @ ";
+            for &c in l {
+                e9_put(c);
+            }
+            for &c in loc.file().as_bytes() {
+                e9_put(c);
+            }
+            let mut n = loc.line();
+            let mut digs = [0u8; 10];
+            let mut i = 0;
+            if n == 0 {
+                digs[0] = b'0';
+                i = 1;
+            }
+            while n > 0 {
+                digs[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+            }
+            while i > 0 {
+                i -= 1;
+                e9_put(digs[i]);
+            }
+        }
+        let nl = b"\r\n";
+        for &c in nl {
+            e9_put(c);
+        }
+    }
+    loop {
+        unsafe { core::arch::asm!("cli", "hlt") }
+    }
 }
