@@ -35,6 +35,13 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 - Файловые системы: FAT32 (чтение и запись), EXT4 (просмотр), TAR initrd
 - Пользователи: вход, `useradd`, `userdel`, `passwd`
 
+**Многозадачность и Ring 3**
+- Вытесняющий планировщик: PIT 50 Гц (IRQ0), round-robin, полное сохранение контекста в обработчике прерывания (регистры + FXSAVE/FXRSTOR)
+- Пользовательский режим: TSS, user-сегменты GDT, U/S-страницы страниц таблиц; процессы исполняются в ring 3
+- Системные вызовы `int 0x80`: `write`, `yield`, `exit` — шлюз DPL 3, автоматический переход на стек ядра через TSS.RSP0
+- Изоляция отказов: исключение в процессе (деление на ноль, #UD, #PF) убивает только процесс — ядро и GUI продолжают работать
+- Демо в терминале: `hello`, `hello fault`, `tasks`; живая таблица процессов в Task Manager
+
 **Графический интерфейс** (`gui /start --all`)
 - Оконный менеджер на C: рамки, тени, свернуть/развернуть/закрыть, панель задач, меню «Пуск», часы
 - Полноценный рабочий стол: обои (BMP), иконки приложений, папки и ярлыки, контекстное меню
@@ -63,8 +70,11 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 | ![Aero Snap — превью зоны](docs/screenshots/snap.jpg) | ![Развернутое окно](docs/screenshots/maximized.png) |
 | ![Task Manager](docs/screenshots/task-manager.jpg) | ![Календарь](docs/screenshots/calendar.jpg) |
 | ![PC Info](docs/screenshots/pc-info.jpg) | ![Settings](docs/screenshots/settings.jpg) |
+| ![Ring 3 процессы](docs/screenshots/ring3-tasks.jpg) | ![Изоляция отказов](docs/screenshots/ring3-fault.jpg) |
 
 Aero Snap: перетащите окно к верхнему краю — развернётся на весь экран, к левому или правому — займёт половину.
+
+`task-manager.jpg`: окно Task Manager показывает настоящие задачи ядра: PID, состояние (Running/Ready/Dead), тики таймера и последнее сообщение процесса. `ring3-tasks.jpg`: процесс `hello` исполняется в ring 3 и отчитывается через `int 0x80` (`ring3 task tick 308`). `ring3-fault.jpg`: процесс с намеренным `#UD` изолирован ядром (Dead, код 262) — система продолжила работу.
 
 ## fetch
 
@@ -157,6 +167,7 @@ make run-fat32    # диск + ISO
 | Сеть | `ifconfig`, `nslookup`, `wget`, `net` |
 | Браузер | `browser [адрес]` |
 | Приложения | `call`, `list-apps`, `gui /start --all`, `notepad /start`, `gl /start` |
+| Процессы | `hello` (ring 3 демо), `hello fault` (демо изоляции отказов), `tasks` (таблица задач) |
 | Экран | `display /scr 1920x1080`, `display /scr default` |
 
 ## Структура проекта
@@ -166,6 +177,12 @@ MiLuna/
 ├── src/
 │   ├── lib.rs          ядро: главный цикл, терминал, приложения
 │   ├── boot.asm        загрузчик (long mode, таблицы страниц, GDT)
+│   ├── task.rs         процессы, планировщик, syscalls int 0x80
+│   ├── trap.rs         единая точка входа прерываний/исключений, контекст-свитч
+│   ├── gdt.rs          GDT с user-сегментами и TSS (RSP0)
+│   ├── pit.rs          системный таймер 50 Гц (IRQ0)
+│   ├── idt.rs          таблица прерываний, экран паники
+│   ├── user/hello.asm  демо-программа для ring 3 (nasm -> flat bin)
 │   ├── ui/             оконный менеджер на C (wm.c, gfx.c, taskbar.c)
 │   ├── cui.rs, wm.rs   мост Rust <-> C и логика окон
 │   ├── graphics.rs, vesa.rs, fastblit.rs   графика
@@ -188,10 +205,13 @@ MiLuna/
 - [x] Экран паники ядра (вектор, имя исключения, CR2, RIP) вместо `hlt`
 - [x] Полный рабочий стол: панель задач, меню «Пуск», иконки, обои
 - [x] Alt+Tab и Aero Snap (верх/лево/право с превью зоны)
+- [x] Вытесняющая многозадачность: PIT 50 Гц (IRQ0), контекст-свитч из прерывания, FXSAVE/FXRSTOR
+- [x] Ring 3: TSS, user-сегменты GDT, U/S-страницы, процессы с syscall `int 0x80` (write/yield/exit), изоляция отказов
+- [x] Task Manager показывает реальные задачи ядра вместо заглушек
 
 **Дальше**
-- [ ] Ring 3: TSS, `syscall`/`sysret`, пользовательские страницы (U/S), ELF-загрузчик
-- [ ] Вытесняющая многозадачность: PIT/LAPIC-таймер, контекст-свитч из прерывания
+- [ ] Быстрый путь `syscall`/`sysret` (MSR LSTAR/STAR/FMASK) и ELF-загрузчик пользовательских программ
+- [ ] `fork`/`exec`-модель, разделяемая память, приоритеты планировщика
 - [ ] SMP: парсинг MADT, INIT-SIPI, per-CPU области, блокировки
 - [ ] NX-бит и защита ядерных страниц
 - [ ] HPET/LAPIC-таймер вместо busy-wait `sleep`, ACPI poweroff
