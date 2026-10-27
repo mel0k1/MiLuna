@@ -87,6 +87,7 @@ target/$(TARGET)/release/libmiluna.a: FORCE target/grub_boot.img target/grub_cor
 	$(CARGO) build --release \
 		-Z build-std=core,compiler_builtins,alloc \
 		-Z build-std-features=compiler-builtins-mem \
+		-Z json-target-spec \
 		--target $(TARGET)
 	@echo "  Rust kernel compiled"
 
