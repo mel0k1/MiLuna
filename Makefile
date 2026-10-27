@@ -82,7 +82,13 @@ target/grub_core.img: target/grub_embed.cfg
 	grub-mkimage -O i386-pc -d $(GRUB_I386) -p '(,msdos1)/' -c target/grub_embed.cfg \
 		-o $@ biosdisk part_msdos fat multiboot2 boot echo all_video vbe
 
-target/$(TARGET)/release/libmiluna.a: FORCE target/grub_boot.img target/grub_core.img
+target/hello.bin src/user/hello.bin: src/user/hello.asm
+	mkdir -p src/user target
+	nasm -f bin $< -o src/user/hello.bin
+	cp src/user/hello.bin target/hello.bin
+	@echo "  User program compiled"
+
+target/$(TARGET)/release/libmiluna.a: FORCE target/grub_boot.img target/grub_core.img target/hello.bin
 	RUSTFLAGS="-C link-arg=-nostdlib -C relocation-model=static -C code-model=kernel -C no-redzone=yes" \
 	$(CARGO) build --release \
 		-Z build-std=core,compiler_builtins,alloc \

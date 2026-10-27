@@ -45,6 +45,12 @@ mod cui;
 mod installer;
 mod syscfg;
 mod termfs;
+mod gdt;
+mod pit;
+mod task;
+mod trap;
+
+static HELLO_BIN: &[u8] = include_bytes!("user/hello.bin");
 
 pub static mut NET_APP_REQUEST: u8 = 0;
 
@@ -4811,6 +4817,36 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                 }
             }
 
+            fn window_requests_pending() -> bool {
+                unsafe {
+                    TASK_WINDOW_REQUESTED
+                        || GL_WINDOW_REQUESTED
+                        || NOTEPAD_WINDOW_REQUESTED
+                        || CRE_TOOL_WINDOW_REQUESTED
+                        || HTML_WINDOW_REQUESTED
+                        || MEDIA_WINDOW_REQUESTED
+                        || PCINF_WINDOW_REQUESTED
+                        || SUPPORT_WINDOW_REQUESTED
+                        || CLOCK_WINDOW_REQUESTED
+                }
+            }
+
+            fn spawn_hello(fault: bool) -> &'static str {
+                let name: &[u8] = if fault { b"hello-fault" } else { b"hello" };
+                let pid = task::spawn_user(HELLO_BIN, name, fault);
+                if pid >= 0 {
+                    if fault {
+                        "ring3 task spawned (fault mode: #UD at tick 5). Watch Task Manager / `tasks`."
+                    } else {
+                        "ring3 task spawned. Watch Task Manager or run `tasks`."
+                    }
+                } else if pid == -1 {
+                    "task table full"
+                } else {
+                    "spawn failed"
+                }
+            }
+
             fn exec_command(input: &str) -> &'static str {
                 let trimmed = input.trim();
 
@@ -5153,7 +5189,10 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                 }
 
                 match trimmed {
-                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)",
+                    "hello" => spawn_hello(false),
+                    "hello fault" => spawn_hello(true),
+                    "tasks" => task::list_tasks(),
+                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, tasks - ring 3 processes",
                     "ver" => "MiLuna 1.0.0",
                     "fetch" | "neofetch" => fetch_info(),
                     "mem" => mem_info(),
@@ -6471,6 +6510,9 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             unsafe { idt::init_idt(); }
             mouse::init_ps2_mouse();
             unsafe { mouse::init_mouse_interrupts(); }
+            unsafe { gdt::init(); }
+            unsafe { task::init(); }
+            unsafe { pit::init(); }
 
             let mut cursor_x = 400usize;
             let mut cursor_y = 300usize;
@@ -6507,6 +6549,11 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                 let mut dirty = fastblit::Dirty::new();
 
                 let net_changed = net::poll();
+
+                if task::take_dirty() {
+                    redraw_all(&mut gfx, &wm, &term_input, term_len);
+                    need_flush = true;
+                }
 
                 unsafe {
                     if POWER_REQUEST {
@@ -7129,12 +7176,15 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     }
                 }
 
-                let mouse_pkt = if unsafe { GUI_MODE } {
+                let mut mouse_pkt = if unsafe { GUI_MODE } {
                     mouse::get_mouse_packet()
                 } else {
                     let _ = mouse::get_mouse_packet();
                     None
                 };
+                if mouse_pkt.is_none() && unsafe { window_requests_pending() } {
+                    mouse_pkt = Some(mouse::MousePacket { dx: 0, dy: 0, left: false, right: false, middle: false, wheel: 0 });
+                }
                 if let Some(packet) = mouse_pkt {
                     let old_x = cursor_x;
                     let old_y = cursor_y;

@@ -173,112 +173,126 @@ pub fn update_process_stats() {
 pub fn draw_task_manager(gfx: &mut Graphics, win_x: usize, win_y: usize, win_w: usize, win_h: usize) {
     let bg_color = Color::rgb(30, 30, 35).to_u32();
     gfx.fill_rect(win_x, win_y, win_w, win_h, bg_color);
-    
 
     gfx.fill_rect(win_x, win_y, win_w, 30, Color::rgb(50, 50, 55).to_u32());
     gfx.draw_text(win_x + 10, win_y + 8, "Task Manager", Color::rgb(200, 200, 220).to_u32(), Color::rgb(50, 50, 55).to_u32());
-    
-    unsafe {
 
-        gfx.draw_text(win_x + win_w - 150, win_y + 8, "Processes: ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(50, 50, 55).to_u32());
-        let count_str = num_to_str(PROCESS_COUNT);
-        gfx.draw_text(win_x + win_w - 60, win_y + 8, count_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(50, 50, 55).to_u32());
+    let (count, user_count, total_ticks, user_ticks) = crate::task::stats();
+    let count_str = num_to_str(count);
+    let user_str = num_to_str(user_count);
+    gfx.draw_text(win_x + win_w - 190, win_y + 8, "Tasks: ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(50, 50, 55).to_u32());
+    gfx.draw_text(win_x + win_w - 130, win_y + 8, count_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(50, 50, 55).to_u32());
+    gfx.draw_text(win_x + win_w - 100, win_y + 8, "ring3: ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(50, 50, 55).to_u32());
+    gfx.draw_text(win_x + win_w - 45, win_y + 8, user_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(50, 50, 55).to_u32());
+
+    let cpu_pct = if total_ticks > 0 {
+        (user_ticks * 100 / total_ticks) as usize
+    } else {
+        0
+    };
+
+    let stats_y = win_y + 40;
+    gfx.fill_rect(win_x + 10, stats_y, win_w - 20, 22, Color::rgb(40, 40, 45).to_u32());
+    gfx.draw_text(win_x + 20, stats_y + 4, "CPU (ring3 share): ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
+    let cpu_str = num_to_str(cpu_pct);
+    gfx.draw_text(win_x + 175, stats_y + 4, cpu_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(40, 40, 45).to_u32());
+    gfx.draw_text(win_x + 215, stats_y + 4, "%", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
+    let tt_str = num_to_str(total_ticks as usize);
+    gfx.draw_text(win_x + 260, stats_y + 4, "timer ticks: ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
+    gfx.draw_text(win_x + 370, stats_y + 4, tt_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(40, 40, 45).to_u32());
+
+    let header_y = win_y + 70;
+    gfx.fill_rect(win_x + 10, header_y, win_w - 20, 22, Color::rgb(60, 60, 70).to_u32());
+    let headers = ["PID", "Name", "State", "Ticks", "Last message"];
+    let col_x = [win_x + 18, win_x + 68, win_x + 168, win_x + 240, win_x + 320];
+    for (i, header) in headers.iter().enumerate() {
+        gfx.draw_text(col_x[i], header_y + 5, header, Color::rgb(180, 180, 200).to_u32(), Color::rgb(60, 60, 70).to_u32());
     }
-    
 
-    unsafe {
-        let mut total_mem = 0;
-        let mut total_cpu = 0;
-        let mut running_count = 0;
-        
-        for i in 0..PROCESS_COUNT {
-            total_mem += PROCESSES[i].memory;
-            total_cpu += PROCESSES[i].cpu;
-            if PROCESSES[i].state == ProcessState::Running {
-                running_count += 1;
+    let row_height = 24;
+    let mut y_pos = header_y + 28;
+    let max_rows = (win_h.saturating_sub(140)) / row_height;
+    let mut shown = 0usize;
+
+    for i in 0..crate::task::MAX_TASKS {
+        if shown >= max_rows { break; }
+        let info = match crate::task::snapshot(i) {
+            Some(x) => x,
+            None => continue,
+        };
+        let row_color = if shown % 2 == 0 {
+            Color::rgb(40, 40, 45).to_u32()
+        } else {
+            Color::rgb(35, 35, 40).to_u32()
+        };
+        gfx.fill_rect(win_x + 10, y_pos, win_w - 20, row_height, row_color);
+
+        let pid_str = num_to_str(info.pid as usize);
+        gfx.draw_text(col_x[0], y_pos + 5, pid_str, Color::rgb(150, 150, 180).to_u32(), row_color);
+
+        let mut name_bytes = [0u8; 17];
+        let mut nlen = 0usize;
+        for j in 0..16 {
+            if info.name[j] == 0 { break; }
+            name_bytes[j] = info.name[j];
+            nlen += 1;
+        }
+        let name = core::str::from_utf8(&name_bytes[..nlen]).unwrap_or("task");
+        let name_color = if info.state == crate::task::ST_DEAD {
+            Color::rgb(120, 120, 120).to_u32()
+        } else {
+            Color::rgb(200, 200, 220).to_u32()
+        };
+        gfx.draw_text(col_x[1], y_pos + 5, name, name_color, row_color);
+
+        let state_str = crate::task::state_name(info.state);
+        let state_color = match info.state {
+            crate::task::ST_RUNNING => Color::rgb(0, 220, 0).to_u32(),
+            crate::task::ST_READY => Color::rgb(220, 220, 0).to_u32(),
+            crate::task::ST_DEAD => Color::rgb(220, 60, 60).to_u32(),
+            _ => Color::rgb(150, 150, 180).to_u32(),
+        };
+        gfx.draw_text(col_x[2], y_pos + 5, state_str, state_color, row_color);
+
+        let ticks_str = num_to_str(info.ticks as usize);
+        gfx.draw_text(col_x[3], y_pos + 5, ticks_str, Color::rgb(200, 200, 220).to_u32(), row_color);
+
+        let mut msg_bytes = [0u8; 68];
+        let mut mlen;
+        if info.state == crate::task::ST_DEAD {
+            let ec = num_to_str(info.exit_code as usize);
+            let mut k = 0usize;
+            for &c in b"exit " { msg_bytes[k] = c; k += 1; }
+            for &c in ec.as_bytes() { if k < 64 { msg_bytes[k] = c; k += 1; } }
+            mlen = k;
+        } else {
+            mlen = info.msg_len.min(64);
+            for j in 0..mlen {
+                let c = info.msg[j];
+                msg_bytes[j] = if c == 0 { b' ' } else { c };
             }
         }
-        
-        let stats_y = win_y + 40;
-        gfx.fill_rect(win_x + 10, stats_y, win_w - 20, 22, Color::rgb(40, 40, 45).to_u32());
-        
-        let mem_str = num_to_str(total_mem);
-        gfx.draw_text(win_x + 20, stats_y + 4, "Memory: ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
-        gfx.draw_text(win_x + 90, stats_y + 4, mem_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(40, 40, 45).to_u32());
-        gfx.draw_text(win_x + 160, stats_y + 4, "KB", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
-        
-        let cpu_str = num_to_str(CPU_LOAD);
-        gfx.draw_text(win_x + 210, stats_y + 4, "CPU: ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
-        gfx.draw_text(win_x + 260, stats_y + 4, cpu_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(40, 40, 45).to_u32());
-        gfx.draw_text(win_x + 300, stats_y + 4, "%", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
-        
-        let run_str = num_to_str(running_count);
-        gfx.draw_text(win_x + 340, stats_y + 4, "Running: ", Color::rgb(150, 150, 180).to_u32(), Color::rgb(40, 40, 45).to_u32());
-        gfx.draw_text(win_x + 410, stats_y + 4, run_str, Color::rgb(200, 200, 220).to_u32(), Color::rgb(40, 40, 45).to_u32());
+        let msg = core::str::from_utf8(&msg_bytes[..mlen]).unwrap_or("");
+        let msg_color = if info.state == crate::task::ST_DEAD {
+            Color::rgb(220, 100, 100).to_u32()
+        } else {
+            Color::rgb(140, 200, 140).to_u32()
+        };
+        gfx.draw_text(col_x[4], y_pos + 5, msg, msg_color, row_color);
+
+        y_pos += row_height;
+        shown += 1;
     }
-    
 
-    let header_y = win_y + 72;
-    gfx.fill_rect(win_x + 10, header_y, win_w - 20, 22, Color::rgb(60, 60, 70).to_u32());
-    
-    let headers = ["PID", "Process", "Memory", "CPU", "State"];
-    let col_widths = [40, 150, 80, 50, 80];
-    let mut x_pos = win_x + 20;
-    
-    for (i, header) in headers.iter().enumerate() {
-        gfx.draw_text(x_pos, header_y + 5, header, Color::rgb(180, 180, 200).to_u32(), Color::rgb(60, 60, 70).to_u32());
-        x_pos += col_widths[i];
+    if shown == 0 {
+        gfx.draw_text(win_x + 20, y_pos + 5, "no user tasks - run `hello` in Terminal", Color::rgb(130, 130, 160).to_u32(), bg_color);
+        y_pos += row_height;
     }
-    
 
-    unsafe {
-        let mut y_pos = header_y + 28;
-        let row_height = 22;
-        let max_rows = (win_h - 120) / row_height;
-        
-        for i in 0..PROCESS_COUNT.min(max_rows) {
-            let process = &PROCESSES[i];
-            
-            let row_color = if i % 2 == 0 {
-                Color::rgb(40, 40, 45).to_u32()
-            } else {
-                Color::rgb(35, 35, 40).to_u32()
-            };
-            gfx.fill_rect(win_x + 10, y_pos, win_w - 20, row_height, row_color);
-            
-
-            let pid_str = num_to_str(process.pid);
-            gfx.draw_text(win_x + 20, y_pos + 4, pid_str, Color::rgb(150, 150, 180).to_u32(), row_color);
-            
-
-            let name = core::str::from_utf8(&process.name[..process.name_len]).unwrap_or("Unknown");
-            gfx.draw_text(win_x + 65, y_pos + 4, name, Color::rgb(200, 200, 220).to_u32(), row_color);
-            
-
-            let mem_str = num_to_str(process.memory);
-            gfx.draw_text(win_x + 220, y_pos + 4, mem_str, Color::rgb(200, 200, 220).to_u32(), row_color);
-            
-
-            let cpu_str = num_to_str(process.cpu);
-            let cpu_color = if process.cpu > 10 {
-                Color::rgb(255, 100, 100).to_u32()
-            } else if process.cpu > 5 {
-                Color::rgb(255, 200, 100).to_u32()
-            } else {
-                Color::rgb(100, 200, 100).to_u32()
-            };
-            gfx.draw_text(win_x + 305, y_pos + 4, cpu_str, cpu_color, row_color);
-            
-
-            let state_str = process.state.to_str();
-            let state_color = process.state.color();
-            gfx.draw_text(win_x + 360, y_pos + 4, state_str, state_color, row_color);
-            
-            y_pos += row_height;
-        }
-    }
+    let hint_y = win_y + win_h - 28;
+    gfx.fill_rect(win_x + 10, hint_y, win_w - 20, 20, Color::rgb(45, 45, 52).to_u32());
+    gfx.draw_text(win_x + 20, hint_y + 4, "Terminal: hello | hello fault | tasks", Color::rgb(130, 130, 160).to_u32(), Color::rgb(45, 45, 52).to_u32());
 }
-
 
 pub fn task_start() -> &'static str {
     unsafe {

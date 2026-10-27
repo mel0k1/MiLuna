@@ -5,3 +5,5 @@
 /fat32.img
 *.log
 .DS_Store
+
+/src/user/hello.bin

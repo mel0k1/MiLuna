@@ -62,10 +62,11 @@ macro_rules! gen_stub {
         #[unsafe(naked)]
         extern "x86-interrupt" fn $name(_sf: &InterruptStackFrame) {
             naked_asm!(
-                "push 0",
+                "sub rsp, 8",
                 "push {num}",
-                "jmp isr_common",
-                num = const $num
+                "jmp {c}",
+                num = const $num,
+                c = sym crate::trap::trap_common
             );
         }
     };
@@ -78,8 +79,9 @@ macro_rules! gen_stub_error {
         extern "x86-interrupt" fn $name(_sf: &InterruptStackFrame, _error_code: u64) {
             naked_asm!(
                 "push {num}",
-                "jmp isr_common",
-                num = const $num
+                "jmp {c}",
+                num = const ($num | 0x100),
+                c = sym crate::trap::trap_common
             );
         }
     };
@@ -186,7 +188,7 @@ fn vga_print(s: &[u8], row: u16, col: u16, attr: u8) {
     }
 }
 
-fn kernel_panic(vec: u64, err: u64, sf: &InterruptStackFrame) -> ! {
+pub fn kernel_panic(vec: u64, err: u64, rip: u64) -> ! {
     let name = if (vec as usize) < 32 { EXC_NAMES[vec as usize] } else { "Unknown" };
     unsafe {
         let (addr, _, w, h) = crate::graphics::FB_INFO;
@@ -203,7 +205,7 @@ fn kernel_panic(vec: u64, err: u64, sf: &InterruptStackFrame) -> ! {
             panic_text(24, 156, "Error code:", fg);
             panic_hex(152, 156, err, fg);
             panic_text(24, 184, "RIP:", fg);
-            panic_hex(72, 184, sf.rip, fg);
+            panic_hex(72, 184, rip, fg);
             if vec == 14 {
                 let cr2: u64;
                 core::arch::asm!("mov {}, cr2", out(reg) cr2);
@@ -220,24 +222,16 @@ fn kernel_panic(vec: u64, err: u64, sf: &InterruptStackFrame) -> ! {
     loop { unsafe { core::arch::asm!("cli", "hlt"); } }
 }
 
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub extern "x86-interrupt" fn isr_common(_sf: &InterruptStackFrame, _error_code: u64) {
-    naked_asm!(
-        "sub rsp, 8",
-        "mov rdi, rsp",
-        "add rdi, 24",
-        "mov rsi, [rsp + 8]",
-        "mov rdx, [rsp + 16]",
-        "call {panic}",
-        "ud2",
-        panic = sym kernel_panic,
-    );
-}
-
 pub unsafe fn set_handler(vector: usize, handler: extern "x86-interrupt" fn(&InterruptStackFrame, u64)) {
     if vector < IDT_ENTRIES {
         IDT[vector].set_handler_addr(handler as u64);
+    }
+}
+
+pub unsafe fn set_gate_flags(vector: usize, handler_addr: u64, flags: u8) {
+    if vector < IDT_ENTRIES {
+        IDT[vector].set_handler_addr(handler_addr);
+        IDT[vector].flags = flags;
     }
 }
 
@@ -274,6 +268,10 @@ pub unsafe fn init_idt() {
     IDT[29].set_handler_addr(isr29 as u64);
     IDT[30].set_handler_addr(isr30 as u64);
     IDT[31].set_handler_addr(isr31 as u64);
+
+    IDT[0x20].set_handler_addr(crate::trap::timer_entry as u64);
+    IDT[0x80].set_handler_addr(crate::trap::syscall_entry as u64);
+    IDT[0x80].flags = 0xEE;
 
     let idt_ptr = IdtPtr {
         limit: (size_of::<[IdtEntry; IDT_ENTRIES]>() - 1) as u16,
