@@ -1,7 +1,9 @@
 // SMP bringup: copy the trampoline to 0x8000, patch per-AP parameters,
 // wake each AP with INIT + SIPI, wait for it to report online.
-// Phase 1: APs enter long mode, load their own TSS and park in a hlt loop;
-// per-CPU scheduling is the next roadmap step.
+// Phase D: APs leave the parking lot - each gets a per-CPU area (GS), loads
+// the shared IDT, enables its own LAPIC + calibrated timer, registers an
+// idle task and loops: hlt until the LAPIC timer or a resched IPI delivers
+// a trap frame, which the scheduler uses to hand it stolen/spawned work.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,8 +25,7 @@ static ONLINE: [AtomicBool; MAX_APS] = [
 struct ApStack([u8; 4096]);
 static mut AP_STACKS: [ApStack; MAX_APS] = [ApStack([0; 4096]); MAX_APS];
 
-// Per-AP TSS and private RSP0 stacks (APs don't run ring 3 yet, but the
-// structures are ready for per-CPU scheduling).
+// Per-AP TSS and private RSP0 stacks (ring 3 traps transit through here).
 #[repr(align(16))]
 #[derive(Clone, Copy)]
 struct ApRsp0([u8; 8192]);
@@ -32,33 +33,53 @@ static mut AP_RSP0: [ApRsp0; MAX_APS] = [ApRsp0([0; 8192]); MAX_APS];
 
 static mut AP_COUNT: usize = 0;
 static mut AP_IDS: [u8; MAX_APS] = [0; MAX_APS];
+// APIC id -> per-cpu index (BSP is 0, APs get 1..)
+static mut AP_CPU_IDX: [usize; MAX_APS] = [0; MAX_APS];
 
 unsafe fn wr_u16(a: u64, v: u16) { core::ptr::write_volatile(a as *mut u16, v) }
 unsafe fn wr_u64(a: u64, v: u64) { core::ptr::write_unaligned(a as *mut u64, v) }
 
 // AP entry point, called from the trampoline in long mode with interrupts off
 pub extern "C" fn smp_ap_entry(apic_id: u64) -> ! {
-    for i in 0..MAX_APS {
-        if unsafe { AP_IDS[i] } as u64 == apic_id {
-            ONLINE[i].store(true, Ordering::Release);
-            break;
+    unsafe {
+        // find the per-cpu index the BSP assigned to this APIC id
+        let mut idx = 0usize;
+        for i in 0..MAX_APS {
+            if AP_IDS[i] as u64 == apic_id {
+                idx = AP_CPU_IDX[i];
+                break;
+            }
+        }
+        if idx == 0 {
+            idx = 1;
+        }
+        crate::percpu::init_ap(idx, apic_id);
+        crate::idt::reload(); // IDTR is per-CPU: APs must load it themselves
+        // SYSCALL/SYSRET MSRs are per-CPU too: without STAR/LSTAR/FMASK here,
+        // the first `syscall` from a task on this AP jumps to LSTAR=0 (#UD in
+        // ring 0 with a user stack - silent kernel panic on the AP)
+        crate::gdt::init_syscall();
+        crate::lapic::enable();
+        // LAPIC timer intentionally NOT armed here - see lib.rs init notes
+        // (QEMU TCG drops EOI writes from its interrupt context, which would
+        // raise PPR and block this core's interrupt delivery)
+        crate::task::init_idle(idx, (AP_STACKS[idx - 1].0.as_ptr() as u64) + 4096);
+        crate::percpu::cur_set(crate::task::idle_ptr(idx));
+        for i in 0..MAX_APS {
+            if AP_IDS[i] as u64 == apic_id {
+                ONLINE[i].store(true, Ordering::Release);
+                break;
+            }
         }
     }
-    loop {
-        unsafe {
-            core::arch::asm!("cli", "hlt", options(nomem, nostack));
-        }
-    }
+    // park: sti+hlt until the LAPIC timer (0x24) or a resched IPI (0x31)
+    // interrupts; both end up in schedule() via the common trap path, which
+    // either hands this core a task or returns into the idle loop below.
+    crate::task::idle_loop()
 }
 
 pub fn online_count() -> usize {
-    let mut n = 0;
-    for i in 0..MAX_APS {
-        if ONLINE[i].load(Ordering::Acquire) {
-            n += 1;
-        }
-    }
-    unsafe { n + 1 } // + BSP
+    crate::percpu::online()
 }
 
 pub fn ap_ids() -> [u8; MAX_APS] {
@@ -86,6 +107,7 @@ pub unsafe fn init() {
             continue;
         }
         targets[ntargets] = id;
+        AP_CPU_IDX[ntargets] = ntargets + 1; // per-cpu index 1..MAX_APS
         ntargets += 1;
     }
 

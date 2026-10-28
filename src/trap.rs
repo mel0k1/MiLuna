@@ -52,6 +52,30 @@ pub extern "x86-interrupt" fn syscall_entry(_sf: &crate::idt::InterruptStackFram
     );
 }
 
+// Per-core LAPIC timer (~50 Hz after lapic::calibrate): preemption source on
+// every core including the BSP. Must EOI the LAPIC, not the PIC.
+#[unsafe(naked)]
+pub extern "x86-interrupt" fn lapic_timer_entry(_sf: &crate::idt::InterruptStackFrame, _ec: u64) {
+    naked_asm!(
+        "sub rsp, 8",
+        "push 0x24",
+        "jmp {c}",
+        c = sym trap_common,
+    );
+}
+
+// Reschedule IPI (vector 0x31): "the run queue changed, look again". Wakes an
+// idle core out of hlt and doubles as remote preemption of a running task.
+#[unsafe(naked)]
+pub extern "x86-interrupt" fn resched_entry(_sf: &crate::idt::InterruptStackFrame, _ec: u64) {
+    naked_asm!(
+        "sub rsp, 8",
+        "push 0x31",
+        "jmp {c}",
+        c = sym trap_common,
+    );
+}
+
 // Fast syscall entry (SYSCALL instruction, MSR-programmed via gdt::init_syscall).
 // On entry: ring 0 on the USER stack, rcx = user rip, r11 = user rflags,
 // rax = syscall number, interrupts already off (SFMASK cleared IF).
@@ -62,14 +86,16 @@ pub extern "x86-interrupt" fn syscall_entry(_sf: &crate::idt::InterruptStackFram
 #[unsafe(naked)]
 pub extern "C" fn syscall_fast_entry() {
     naked_asm!(
-        // save user rsp, then build the frame on the CURRENT TASK'S kernel stack
-        // (kstack_top-192) - never in the RSP0 area: hardware traps push their iret
-        // frame at the RSP0 top, which would corrupt a syscall frame parked there
-        // while the task runs in user mode. r10 holds the Task* (its frame slot
-        // gets the scratch value instead of the user's r10 - caller-clobbered ABI;
-        // r8/r9/r11 stay untouched apart from the hardware rcx/r11 clobber).
-        "mov [rip + {scratch}], rsp",
-        "mov r10, [rip + {cur_task}]",
+        // save user rsp in the PER-CORE scratch slot, then build the frame on the
+        // CURRENT TASK'S kernel stack (kstack_top-192) - never in the RSP0 area:
+        // hardware traps push their iret frame at the RSP0 top, which would corrupt
+        // a syscall frame parked there while the task runs in user mode. A global
+        // scratch would race between cores, hence gs:64. r10 holds the Task*
+        // (its frame slot gets the scratch value instead of the user's r10 -
+        // caller-clobbered ABI; r8/r9/r11 stay untouched apart from the hardware
+        // rcx/r11 clobber).
+        "mov gs:64, rsp",
+        "mov r10, gs:8",
         "mov rsp, [r10]",
         "sub rsp, 192",
         "add rsp, 128",
@@ -96,7 +122,7 @@ pub extern "C" fn syscall_fast_entry() {
         "mov [rsp + 144], rcx",
         "mov qword ptr [rsp + 152], {cs3}",
         "mov [rsp + 160], r11",
-        "mov rax, [rip + {scratch}]",
+        "mov rax, gs:64",
         "mov [rsp + 168], rax",
         "mov qword ptr [rsp + 176], {ss3}",
         // fpu state (Task+16), Rust handler
@@ -108,7 +134,7 @@ pub extern "C" fn syscall_fast_entry() {
         "jz 2f",
         "mov rsp, rax",
         "2:",
-        "mov r10, [rip + {cur_task}]",
+        "mov r10, gs:8",
         "lea rdi, [r10 + 16]",
         "fxrstor [rdi]",
         // ring3 target -> sysret; ring0 target (kernel task) -> iretq
@@ -150,15 +176,11 @@ pub extern "C" fn syscall_fast_entry() {
         "mov r15, [rsp + 112]",
         "add rsp, 144",
         "iretq",
-        scratch = sym SYSCALL_SCRATCH,
         cs3 = const 0x23u64,
         ss3 = const 0x1Bu64,
-        cur_task = sym crate::task::CUR_TASK,
         handle = sym handle_trap,
     );
 }
-
-static mut SYSCALL_SCRATCH: u64 = 0;
 
 #[unsafe(naked)]
 pub extern "C" fn trap_common() {
@@ -169,7 +191,9 @@ pub extern "C" fn trap_common() {
         "cmp ax, 0x10",
         "je 2f",
         // ---- from ring 3: build frame on current task kernel stack ----
-        "mov rax, [rip + {cur_task}]",
+        // per-CPU cur (gs) and the ENTRY rsp itself - no global rsp0 symbol,
+        // which would only be correct on the BSP (per-AP TSS stacks differ)
+        "mov rax, gs:8",
         "mov rax, [rax]",
         "sub rax, 192",
         "mov [rax + 8], rcx",
@@ -186,14 +210,12 @@ pub extern "C" fn trap_common() {
         "mov [rax + 96], r13",
         "mov [rax + 104], r14",
         "mov [rax + 112], r15",
-        "lea rsi, [rip + {rsp0}]",
+        "lea rsi, [rsp + 8]",
         "lea rdi, [rax + 128]",
-        "lea rsi, [rsi + 8136]",
         "mov rcx, 7",
         "cld",
         "rep movsq",
-        "lea rcx, [rip + {rsp0}]",
-        "mov rcx, [rcx + 8128]",
+        "mov rcx, [rsp]",
         "mov [rax], rcx",
         "mov rsp, rax",
         "jmp 3f",
@@ -226,7 +248,7 @@ pub extern "C" fn trap_common() {
         "mov rsp, rax",
         // ---- common: fxsave, Rust handler, fxrstor, restore ----
         "3:",
-        "mov rax, [rip + {cur_task}]",
+        "mov rax, gs:8",
         "lea rdi, [rax + 16]",
         "fxsave [rdi]",
         "mov rdi, rsp",
@@ -235,7 +257,7 @@ pub extern "C" fn trap_common() {
         "jz 4f",
         "mov rsp, rax",
         "4:",
-        "mov rax, [rip + {cur_task}]",
+        "mov rax, gs:8",
         "lea rdi, [rax + 16]",
         "fxrstor [rdi]",
         "mov rcx, [rsp + 8]",
@@ -298,8 +320,6 @@ pub extern "C" fn trap_common() {
         "jmp 8b",
         "9:",
         "iretq",
-        cur_task = sym crate::task::CUR_TASK,
-        rsp0 = sym crate::gdt::RSP0_STACK,
         handle = sym handle_trap,
     );
 }
@@ -310,16 +330,48 @@ pub extern "C" fn handle_trap(f: *mut TrapFrame) -> u64 {
     let vec = f.vector & 0xFF;
     let err = if has_err { f.slot1 } else { 0 };
     let from_user = f.cs & 0x3 == 3;
-    match vec {
+    let mut r = match vec {
+        // PIT: wall clock only; scheduling belongs to the per-core LAPIC timer
+        // PIT 50 Hz wall clock; also preempts the BSP (Phase C behavior).
+        // NOTE: LAPIC-originated interrupt context drops MMIO writes on QEMU
+        // TCG, so per-core LAPIC-timer preemption relies on the EOI sweeps
+        // done from task context (handle_syscall + GUI loop).
         0x20 => {
             crate::pit::tick();
+            crate::percpu::bump(0);
+            crate::task::e9_tag(b'T');
             unsafe {
-                (*crate::task::CUR_TASK).ticks += 1;
+                (*crate::percpu::cur()).ticks += 1;
             }
             crate::task::schedule(f)
         }
+        // per-core LAPIC timer: preemption on every core
+        0x24 => unsafe {
+            crate::lapic::eoi();
+            crate::percpu::bump(0);
+            crate::task::e9_tag(b'L');
+            (*crate::percpu::cur()).ticks += 1;
+            crate::task::schedule(f)
+        },
+        // reschedule IPI: the run queue changed on another core
+        0x31 => unsafe {
+            crate::lapic::eoi();
+            crate::percpu::bump(1);
+            crate::task::e9_tag(b'P');
+            crate::task::schedule(f)
+        },
         0x80 => crate::task::handle_syscall(f),
         0x00..=0x1F => {
+            // write fault into a COW-shared page: resolve and resume
+            if vec == 14 && err & 2 != 0 {
+                let cr2: u64;
+                unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem)) };
+                unsafe {
+                    if crate::task::cow_resolve(crate::percpu::cur(), cr2) {
+                        return 0;
+                    }
+                }
+            }
             if from_user {
                 crate::task::kill_fault(f, vec, err)
             } else {
@@ -327,5 +379,17 @@ pub extern "C" fn handle_trap(f: *mut TrapFrame) -> u64 {
             }
         }
         _ => 0,
+    };
+    // Signal delivery on the way back to ring 3: pending fatal signals kill
+    // the task before it resumes userspace; ignore-type signals are dropped.
+    // Checked on EVERY trap return from a user task - a CPU-bound task that
+    // never syscalls must still die from a pending SIGTERM at its next
+    // preemption (PIT tick / LAPIC timer / resched IPI), not only at its
+    // next syscall.
+    if from_user {
+        if crate::task::deliver_pending(f) {
+            r = crate::task::schedule(f);
+        }
     }
+    r
 }

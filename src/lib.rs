@@ -49,6 +49,7 @@ mod acpi;
 mod gdt;
 mod lapic;
 mod pit;
+mod percpu;
 mod smp;
 mod task;
 mod trap;
@@ -58,6 +59,8 @@ static NX_BIN: &[u8] = include_bytes!("../target/nx.elf");
 static FORK_BIN: &[u8] = include_bytes!("../target/fork.elf");
 static PRIO_BIN: &[u8] = include_bytes!("../target/prio.elf");
 static EXEC_BIN: &[u8] = include_bytes!("../target/exec.elf");
+static SIG_BIN: &[u8] = include_bytes!("../target/sig.elf");
+static SMP_BIN: &[u8] = include_bytes!("../target/smp.elf");
 
 pub static mut NET_APP_REQUEST: u8 = 0;
 
@@ -4845,14 +4848,14 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             }
 
             fn cpu_info() -> &'static str {
-                static mut BUF: [u8; 256] = [0; 256];
+                static mut BUF: [u8; 640] = [0; 640];
                 static mut LEN: usize = 0;
                 unsafe {
                     LEN = 0;
                     let buf = core::ptr::addr_of_mut!(BUF);
                     let len = core::ptr::addr_of_mut!(LEN);
                     let mut put = |b: u8| {
-                        if *len < 250 {
+                        if *len < 634 {
                             (*buf)[*len] = b;
                             *len += 1;
                         }
@@ -4868,7 +4871,32 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         put(b' ');
                         put_dec_n(&mut put, ids[i] as u64);
                     }
-                    put_str_n(&mut put, b"\nLAPIC base: 0xFEE00000 (from MADT)\nSMP: APs parked in hlt loop, per-CPU scheduling next");
+                    // per-core stats from the per-CPU area
+                    put_str_n(&mut put, b"\ncore apic ticks ipis steal task\n");
+                    for c in 0..total {
+                        put_dec_n(&mut put, c as u64);
+                        put(b' ');
+                        let apic = crate::percpu::CPUS[c].apic;
+                        put_dec_n(&mut put, apic);
+                        put(b' ');
+                        put_dec_n(&mut put, crate::percpu::CPUS[c].ticks);
+                        put(b' ');
+                        put_dec_n(&mut put, crate::percpu::CPUS[c].ipis);
+                        put(b' ');
+                        put_dec_n(&mut put, crate::percpu::CPUS[c].steals);
+                        put(b' ');
+                        let t = crate::percpu::CPUS[c].cur as *const crate::task::Task;
+                        if t.is_null() {
+                            put_str_n(&mut put, b"-");
+                        } else {
+                            let mut nend = 0;
+                            while nend < 16 && (*t).name[nend] != 0 {
+                                nend += 1;
+                            }
+                            put_str_n(&mut put, &(*t).name[..nend]);
+                        }
+                        put(b'\n');
+                    }
                     core::str::from_utf8_unchecked(core::slice::from_raw_parts(
                         core::ptr::addr_of!(BUF) as *const u8,
                         *len,
@@ -5289,9 +5317,25 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             "spawn failed"
                         }
                     }
+                    "sig" => {
+                        let pid = task::spawn_elf(SIG_BIN, b"sig-demo", false, 5);
+                        if pid >= 0 {
+                            "sig-demo spawned: COW fork, SIGTERM to the child, waitpid reaps it."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
+                    "smp" => {
+                        let pid = task::spawn_elf(SMP_BIN, b"smp-demo", false, 5);
+                        if pid >= 0 {
+                            "smp-demo spawned: forks 3 workers - watch them spread (cpuinfo, tasks)."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
                     "tasks" => task::list_tasks(),
                     "cpuinfo" => cpu_info(),
-                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, tasks - ring 3 processes\n  SMP:           cpuinfo - detected CPUs and APIC ids",
+                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, sig, smp, tasks - ring 3 processes\n  SMP:           cpuinfo - per-core ticks/IPIs/steals and current task",
                     "ver" => "MiLuna 1.0.0",
                     "fetch" | "neofetch" => fetch_info(),
                     "mem" => mem_info(),
@@ -6617,10 +6661,20 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     [b"hello", b"nx-test", b"fork-demo", b"prio-demo"],
                 );
             }
+            // per-CPU GS base must exist before task::init stores the first cur
+            unsafe { percpu::init(); }
             unsafe { task::init(); }
             unsafe { pit::init(); }
             unsafe { acpi::init(); }
             unsafe { lapic::enable(); }
+            // NOTE: the per-core LAPIC timer is intentionally NOT armed under
+            // QEMU TCG: its handler cannot EOI (MMIO writes from LAPIC-interrupt
+            // context are dropped there), the in-service vector sticks in ISR,
+            // raises PPR to its priority class and blocks ExtINT (PIT+keyboard)
+            // delivery until the next task-context EOI sweep. PIT keeps driving
+            // BSP scheduling; AP cores run cooperatively + resched IPIs.
+            // On real hardware timer_init() on every core is correct and the
+            // EOI-in-handler works - see lapic.rs for the full story.
             unsafe { smp::init(); }
 
             let mut cursor_x = 400usize;
@@ -6654,6 +6708,9 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
             loop {
                 syscfg::poll();
+                // PIT-clocked LAPIC service from task context (see lapic.rs):
+                // per-core preemption stream + unstick stuck deliveries
+                unsafe { lapic::tick_service() };
                 let mut need_flush = false;
                 let mut dirty = fastblit::Dirty::new();
 
@@ -9024,7 +9081,94 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     }
 }
 
+
+// format a PanicInfo message into a fixed buffer (no alloc in panic paths)
+struct MsgBuf {
+    buf: [u8; 160],
+    len: usize,
+}
+impl core::fmt::Write for MsgBuf {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for b in s.as_bytes() {
+            if self.len < self.buf.len() {
+                self.buf[self.len] = *b;
+                self.len += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn msg_bytes(info: &core::panic::PanicInfo) -> ([u8; 160], usize) {
+    use core::fmt::Write as _;
+    let mut mb = MsgBuf { buf: [0; 160], len: 0 };
+    let _ = write!(mb, "{}", info);
+    (mb.buf, mb.len)
+}
 #[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    loop {}
+fn panic(info: &PanicInfo) -> ! {
+    // A silent loop here turns every kernel bug into a "system froze"
+    // mystery (the whole box keeps taking interrupts and the other cores
+    // idle happily). Print the message to the debugcon/serial ports, then
+    // park with interrupts OFF so the panic is at least visible in logs.
+    // core panics (index OOB etc.) carry a Message payload, not &str: use
+    // PanicInfo::message() and format it, falling back to the payload.
+    let (owned, owned_len) = msg_bytes(info);
+    let msg: &[u8] = if owned_len > 0 {
+        &owned[..owned_len]
+    } else {
+        match info.payload().downcast_ref::<&str>() {
+            Some(s) => (*s).as_bytes(),
+            None => b"panic (no payload)",
+        }
+    };
+    let mut emit = |b: u8| unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0xE9u16,
+            in("al") b,
+            options(nomem, nostack)
+        );
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x3F8u16,
+            in("al") b,
+            options(nomem, nostack)
+        );
+    };
+    for b in b"\r\n[KERNEL PANIC] " {
+        emit(*b);
+    }
+    for b in msg {
+        emit(*b);
+    }
+    if let Some(loc) = info.location() {
+        for b in b" at " {
+            emit(*b);
+        }
+        for b in loc.file().as_bytes() {
+            emit(*b);
+        }
+        for b in b":" {
+            emit(*b);
+        }
+        let mut v = loc.line() as u64;
+        let mut digs = [0u8; 20];
+        let mut n = 0;
+        loop {
+            digs[n] = b'0' + (v % 10) as u8;
+            n += 1;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        while n > 0 {
+            n -= 1;
+            emit(digs[n]);
+        }
+    }
+    loop {
+        unsafe { core::arch::asm!("cli", "hlt") }
+    }
 }

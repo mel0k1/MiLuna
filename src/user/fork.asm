@@ -39,7 +39,7 @@ _start:
     call emit
     mov rbx, 0
 .cl:
-    mov rcx, 400000
+    mov rcx, 6000000
 .b1:
     dec rcx
     jnz .b1
@@ -48,6 +48,19 @@ _start:
     inc rbx
     cmp rbx, 20
     jl .cl
+    ; hold last message visible in `tasks`: short yield cycles keep the
+    ; task alive while the desktop regains its slice (RR on yield)
+    mov rbx, 0
+.chold:
+    mov rcx, 2000000
+.ch1:
+    dec rcx
+    jnz .ch1
+    mov rax, SYS_YIELD
+    syscall
+    inc rbx
+    cmp rbx, 10
+    jl .chold
     mov rax, SYS_EXIT
     xor edi, edi
     syscall
@@ -60,19 +73,31 @@ _start:
     call emit
     mov rbx, 0
 .pl:
-    mov rcx, 400000
+    mov rcx, 6000000
 .p1:
     dec rcx
     jnz .p1
     mov rax, SYS_YIELD
     syscall
     inc rbx
-    cmp rbx, 60
+    cmp rbx, 40
     jl .pl
     lea rdi, [m_done]
     mov rsi, m_done_len
     mov r13, 0
     call emit
+    ; hold final message visible: short yield cycles (desktop keeps slices)
+    mov rbx, 0
+.phold:
+    mov rcx, 2000000
+.ph2:
+    dec rcx
+    jnz .ph2
+    mov rax, SYS_YIELD
+    syscall
+    inc rbx
+    cmp rbx, 10
+    jl .phold
     mov rax, SYS_EXIT
     xor edi, edi
     syscall

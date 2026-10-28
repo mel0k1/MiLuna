@@ -270,6 +270,8 @@ pub unsafe fn init_idt() {
     IDT[31].set_handler_addr(isr31 as u64);
 
     IDT[0x20].set_handler_addr(crate::trap::timer_entry as u64);
+    IDT[0x24].set_handler_addr(crate::trap::lapic_timer_entry as u64);
+    IDT[0x31].set_handler_addr(crate::trap::resched_entry as u64);
     IDT[0x80].set_handler_addr(crate::trap::syscall_entry as u64);
     IDT[0x80].flags = 0xEE;
 
@@ -278,5 +280,14 @@ pub unsafe fn init_idt() {
         base: IDT.as_ptr() as u64,
     };
 
+    core::arch::asm!("lidt [{}]", in(reg) &idt_ptr);
+}
+
+// APs must load the shared IDT themselves: IDTR is per-CPU. Same table.
+pub unsafe fn reload() {
+    let idt_ptr = IdtPtr {
+        limit: (size_of::<[IdtEntry; IDT_ENTRIES]>() - 1) as u16,
+        base: IDT.as_ptr() as u64,
+    };
     core::arch::asm!("lidt [{}]", in(reg) &idt_ptr);
 }

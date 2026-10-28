@@ -49,6 +49,40 @@ impl Graphics {
     }
 
     pub fn flush(&mut self) {
+        // GDB WATCHPOINT SUPPORT: print the struct address once (hex) so a
+        // debugger can watch the fat pointer for corrupting writes
+        {
+            static mut EMITTED: bool = false;
+            unsafe {
+                if !EMITTED {
+                    EMITTED = true;
+                    let a = self as *const Graphics as u64;
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'@', options(nomem, nostack));
+                    for i in 0..16 {
+                        let nib = ((a >> (60 - i * 4)) & 0xF) as u8;
+                        let c = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack));
+                    }
+                }
+            }
+        }
+        // integrity canary: the struct lives on the boot stack; if anything
+        // wild-writes over it we want a loud panic with the raw bytes, not a
+        // slice-index panic (or worse, silent framebuffer garbage)
+        let fi = unsafe { (FB_INFO.1, FB_INFO.2, FB_INFO.3) };
+        let expect_len = fi.0 * fi.2;
+        if self.width != fi.1 || self.height != fi.2 || self.pitch != fi.0 * 4
+            || self.fb.len() != expect_len {
+            let p = self as *const Graphics as u64;
+            let raw = unsafe {
+                core::slice::from_raw_parts(p as *const u64, 5)
+            };
+            panic!(
+                "gfx corrupt: self={:#x} w={} h={} p={} fb={:p} raw={:016x} {:016x} {:016x} {:016x} {:016x}",
+                p, self.width, self.height, self.pitch, self.fb.as_ptr(),
+                raw[0], raw[1], raw[2], raw[3], raw[4]
+            );
+        }
         for y in 0..self.height {
             let src = y * self.width;
             let dst = y * (self.pitch / 4);

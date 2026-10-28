@@ -43,8 +43,12 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 - Системные вызовы: `write`, `yield`, `exit`, `fork`, `exec`, `nice`, `getpid` — fork копирует образ и страницы с правами, exec перезагружает ELF в тот же процесс
 - NX-бит (EFER.NXE): переход на data-страницу роняет процесс с #PF — W^X для пользовательской памяти
 - Изоляция отказов: исключение в процессе убивает только процесс — ядро и GUI продолжают работать
-- SMP: парсинг ACPI MADT (RSDP→RSDT/XSDT), INIT-SIPI через Local APIC, AP-процессоры просыпаются в long mode через trampoline на 0x8000 и паркуются; `cpuinfo` показывает карту CPU
-- Демо в терминале: `hello`, `hello fault`, `nx`, `fork`, `prio`, `exec`, `tasks`, `cpuinfo`
+- SMP: парсинг ACPI MADT (RSDP→RSDT/XSDT), INIT-SIPI через Local APIC, AP-процессоры просыпаются в long mode через trampoline на 0x8000; планирование на всех ядрах
+- Task stealing с IPI-механизмом: resched-IPI (вектор 0x31) будит простаивающие ядра, планировщик per-CPU (GS base), spin-блокировки SCHED/FRAME
+- Per-process таблицы страниц: у каждого процесса свой PML4/PDPT/PDT/PT, переключение CR3, ядро отображено в каждом адресном пространстве
+- Copy-on-write fork: страницы родителя и ребёнка разделяются read-only (бит 9 PTE), запись ловит #PF и выделяет приватную копию, refcount кадров
+- Сигналы и waitpid: SIGTERM/SIGKILL/SIGINT завершают процесс (exit 128+N), SIGUSR1/2/SIGCHLD игнорируются, заблокированный waitpid будится при смерти ребёнка, зомби видны в `tasks`
+- Демо в терминале: `hello`, `hello fault`, `nx`, `fork`, `prio`, `exec`, `sig` (COW+сигналы+waitpid), `smp` (fork-воркеры на все ядра), `tasks`, `cpuinfo` (per-core тики/IPI/steal)
 
 **Графический интерфейс** (`gui /start --all`)
 - Оконный менеджер на C: рамки, тени, свернуть/развернуть/закрыть, панель задач, меню «Пуск», часы
@@ -217,12 +221,12 @@ MiLuna/
 - [x] `fork`/`exec`/`nice`/`getpid`, приоритеты планировщика 1–9
 - [x] SMP: ACPI MADT, Local APIC, INIT-SIPI bringup, per-AP TSS и GDT, `cpuinfo`
 - [x] Task Manager показывает реальные задачи ядра вместо заглушек
+- [x] Планирование на всех ядрах: per-CPU области (GS base), task stealing, resched-IPI (0x31), spin-блокировки
+- [x] Per-process адресные пространства (свой CR3 у процесса) и Copy-on-write fork (refcount + soft-W бит PTE)
+- [x] Сигналы (SIGTERM/KILL/INT фатальны, USR1/2/CHLD игнорируются) и блокирующий `waitpid` со сбором зомби
 
 **Дальше**
-- [ ] Планирование задач на AP-процессорах (per-CPU очереди, task stealing, спин-блокировки)
-- [ ] LAPIC-таймер на всех ядрах вместо PIT только на BSP
-- [ ] Copy-on-write fork и per-process таблицы страниц (полная изоляция адресных пространств)
-- [ ] `wait`/`exit` статусы и зомби-процессы, сигналы
+- [ ] LAPIC-таймер на всех ядрах (в QEMU TCG EOI из обработчика прерывания теряется — нужен HPET/реальное железо)
 - [ ] HPET вместо busy-wait `sleep`, ACPI poweroff
 - [ ] Больше окон одновременно (сейчас 8), damage-tracking во всём композиторе
 - [ ] Постепенный отказ от `static mut` в пользу безопасных абстракций

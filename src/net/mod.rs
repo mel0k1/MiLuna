@@ -197,6 +197,17 @@ pub fn init() {
             ip: None, gateway: None, dns_servers: Vec::new(), enabled: true,
             adapter_name: name, next_port: port, dhcp_started: timer::millis(),
         });
+        // GDB WATCHPOINT SUPPORT: emit the handle field addresses once
+        let n = net().unwrap();
+        for (tag, p) in [(&b'D', &n.dhcp as *const SocketHandle as u64),
+                         (&b'S', &n.dns as *const SocketHandle as u64)] {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") *tag, options(nomem, nostack));
+            for i in 0..16 {
+                let nib = ((p >> (60 - i * 4)) & 0xF) as u8;
+                let c = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack));
+            }
+        }
     }
 }
 
