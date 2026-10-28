@@ -48,7 +48,7 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 - Per-process таблицы страниц: у каждого процесса свой PML4/PDPT/PDT/PT, переключение CR3, ядро отображено в каждом адресном пространстве
 - Copy-on-write fork: страницы родителя и ребёнка разделяются read-only (бит 9 PTE), запись ловит #PF и выделяет приватную копию, refcount кадров
 - Сигналы и waitpid: SIGTERM/SIGKILL/SIGINT завершают процесс (exit 128+N), SIGUSR1/2/SIGCHLD игнорируются, заблокированный waitpid будится при смерти ребёнка, зомби видны в `tasks`
-- Демо в терминале: `hello`, `hello fault`, `nx`, `fork`, `prio`, `exec`, `sig` (COW+сигналы+waitpid), `smp` (fork-воркеры на все ядра), `tasks`, `cpuinfo` (per-core тики/IPI/steal)
+- Демо в терминале: `hello`, `hello fault`, `nx`, `fork`, `prio`, `exec`, `sig` (COW+сигналы+waitpid), `smp` (fork-воркеры на все ядра), `cow`, `wait`, `tasks`, `cpuinfo` (per-core тики/IPI/steal)
 
 **Графический интерфейс** (`gui /start --all`)
 - Оконный менеджер на C: рамки, тени, свернуть/развернуть/закрыть, панель задач, меню «Пуск», часы
@@ -83,7 +83,7 @@ Rust-ядро · оконный менеджер на C · SSE2 · GRUB 2 · б�
 
 Aero Snap: перетащите окно к верхнему краю — развернётся на весь экран, к левому или правому — займёт половину.
 
-`task-manager.jpg`: окно Task Manager показывает настоящие задачи ядра: PID, состояние (Running/Ready/Dead), тики таймера и последнее сообщение процесса. `ring3-tasks.jpg`: процесс `hello` исполняется в ring 3 и отчитывается через `int 0x80` (`ring3 task tick 308`). `ring3-fault.jpg`: процесс с намеренным `#UD` изолирован ядром (Dead, код 262) — система продолжила работу. `ring3-elf.jpg`: таблица процессов с колонкой PRIO — `hello fault` изолирован (262), `nx-test` убит #PF за исполнение NX-страницы (270). `smp-cpuinfo.jpg`: `cpuinfo` — 4 CPU из ACPI MADT, все AP проснулись через INIT-SIPI.
+`task-manager.jpg`: окно Task Manager показывает настоящие задачи ядра: PID, состояние (Running/Ready/Dead), тики таймера и последнее сообщение процесса. `ring3-tasks.jpg`: процесс `hello` исполняется в ring 3 и отчитывается через `int 0x80` (`ring3 task tick 308`). `ring3-fault.jpg`: процесс с намеренным `#UD` изолирован ядром (Dead, код 262) — система продолжила работу. `ring3-elf.jpg`: таблица процессов с колонкой PRIO — `hello fault` изолирован (262), `nx-test` убит #PF за исполнение NX-страницы (270). `smp-cpuinfo.jpg`: `cpuinfo` — 4 CPU из ACPI MADT, все AP проснулись через INIT-SIPI. `smp-tasks.jpg`: колонка CPU в `tasks` — четыре CPU-bound задачи `smp` распределены планировщиком по ядрам (task stealing), `cow` — fork с copy-on-write, `wait` — блокирующий `wait()` с кодом выхода 42.
 
 ## fetch
 
@@ -224,9 +224,12 @@ MiLuna/
 - [x] Планирование на всех ядрах: per-CPU области (GS base), task stealing, resched-IPI (0x31), spin-блокировки
 - [x] Per-process адресные пространства (свой CR3 у процесса) и Copy-on-write fork (refcount + soft-W бит PTE)
 - [x] Сигналы (SIGTERM/KILL/INT фатальны, USR1/2/CHLD игнорируются) и блокирующий `waitpid` со сбором зомби
+- [x] Калибровка TSC по RTC-границе секунды вместо PC-спикера (2.2x дрейф под QEMU)
 
 **Дальше**
 - [ ] LAPIC-таймер на всех ядрах (в QEMU TCG EOI из обработчика прерывания теряется — нужен HPET/реальное железо)
+- [ ] Чинить редкую гонку порчи памяти под TCG: наблюдается только при исполнении задач на AP (strict single-core прогон чист)
+- [ ] `waitpid` с конкретным PID, группы процессов
 - [ ] HPET вместо busy-wait `sleep`, ACPI poweroff
 - [ ] Больше окон одновременно (сейчас 8), damage-tracking во всём композиторе
 - [ ] Постепенный отказ от `static mut` в пользу безопасных абстракций
