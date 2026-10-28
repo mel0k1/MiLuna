@@ -63,6 +63,7 @@ static SIG_BIN: &[u8] = include_bytes!("../target/sig.elf");
 static COW_BIN: &[u8] = include_bytes!("../target/cow.elf");
 static WAIT_BIN: &[u8] = include_bytes!("../target/wait.elf");
 static SMP_BIN: &[u8] = include_bytes!("../target/smp.elf");
+static RACE_BIN: &[u8] = include_bytes!("../target/race.elf");
 
 pub static mut NET_APP_REQUEST: u8 = 0;
 
@@ -5347,6 +5348,14 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         let pid = task::spawn_elf(SMP_BIN, b"smp-demo", false, 5);
                         if pid >= 0 {
                             "smp-demo spawned: forks 3 workers - watch them spread (cpuinfo, tasks)."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
+                    "race" => {
+                        let pid = task::spawn_elf(RACE_BIN, b"race-demo", false, 5);
+                        if pid >= 0 {
+                            "race-demo spawned: 6 fast-exit children, reap churn stress."
                         } else {
                             "spawn failed"
                         }
