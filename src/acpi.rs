@@ -1,9 +1,11 @@
-// ACPI table discovery: RSDP -> RSDT/XSDT -> MADT (APIC).
-// Yields the Local APIC base address and the list of processor APIC IDs.
+// ACPI table discovery: RSDP -> RSDT/XSDT -> MADT (APIC), HPET.
+// Yields the Local APIC base address, the list of processor APIC IDs and
+// the HPET timer block base address.
 
 pub static mut LAPIC_BASE: u64 = 0xFEE00000;
 pub static mut APIC_IDS: [u8; 8] = [0; 8];
 pub static mut CPU_COUNT: usize = 0;
+pub static mut HPET_BASE: u64 = 0;
 
 unsafe fn rd_u8(a: u64) -> u8 { core::ptr::read_volatile(a as *const u8) }
 unsafe fn rd_u32(a: u64) -> u32 { core::ptr::read_volatile(a as *const u32) }
@@ -24,8 +26,8 @@ unsafe fn sig_at(a: u64, s: &[u8; 4]) -> bool {
     rd_u32(a) == u32::from_le_bytes(*s)
 }
 
-// walk RSDT (u32 entries) or XSDT (u64 entries) looking for the MADT
-unsafe fn find_madt(table: u64, wide: bool) -> u64 {
+// walk RSDT (u32 entries) or XSDT (u64 entries) looking for a table by signature
+unsafe fn find_table(table: u64, wide: bool, sig: &[u8; 4]) -> u64 {
     if table == 0 {
         return 0;
     }
@@ -41,7 +43,7 @@ unsafe fn find_madt(table: u64, wide: bool) -> u64 {
         if entry == 0 {
             continue;
         }
-        if sig_at(entry, b"APIC") {
+        if sig_at(entry, sig) {
             return entry;
         }
     }
@@ -63,15 +65,34 @@ pub unsafe fn init() {
         return;
     }
     let revision = rd_u8(rsdp + 15);
-    let mut madt = 0u64;
-    if revision >= 2 {
-        madt = find_madt(rd_u64(rsdp + 24), true); // XSDT
-    }
+    let (rsdt, xsdt) = if revision >= 2 {
+        (rd_u32(rsdp + 16) as u64, rd_u64(rsdp + 24))
+    } else {
+        (rd_u32(rsdp + 16) as u64, 0)
+    };
+    let mut madt = find_table(xsdt, true, b"APIC");
     if madt == 0 {
-        madt = find_madt(rd_u32(rsdp + 16) as u64, false); // RSDT
+        madt = find_table(rsdt, false, b"APIC");
     }
     if madt == 0 {
         return;
+    }
+    // HPET (optional): the table's GAS field points at the MMIO timer block
+    let mut hp = find_table(xsdt, true, b"HPET");
+    if hp == 0 {
+        hp = find_table(rsdt, false, b"HPET");
+    }
+    if hp != 0 {
+        let len = rd_u32(hp + 4) as u64;
+        if len >= 52 {
+            // GAS layout: space id @40, bit width @41, bit offset @42,
+            // access size @43, 64-bit address @44 (12-byte structure)
+            let space = rd_u8(hp + 40); // GAS address space id: 0 = system memory
+            let addr = rd_u64(hp + 44);
+            if space == 0 && addr != 0 {
+                HPET_BASE = addr;
+            }
+        }
     }
     let lapic_base = rd_u32(madt + 36) as u64;
     if lapic_base != 0 {

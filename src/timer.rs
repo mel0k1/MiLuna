@@ -19,7 +19,8 @@ unsafe fn rtc_uip() -> bool {
 
 // Wait for one full RTC second: UIP falls exactly at the second boundary.
 // The PC-speaker TSC calibration used here before ran ~2.2x slow under QEMU,
-// which skewed millis() and every timer derived from it.
+// which skewed millis() and every timer derived from it. This path is now a
+// FALLBACK only: when an HPET block exists (ACPI), millis() never needs it.
 unsafe fn rtc_wait_second_boundary() {
     let mut guard = 0u64;
     while rtc_uip() {
@@ -45,24 +46,32 @@ pub fn wait_second_boundary() {
 
 pub fn rdtsc() -> u64 { unsafe { _rdtsc() } }
 
-pub fn init() {
+// Kept for call-site compatibility: time sources initialize lazily now.
+// The RTC/TSC dance costs ~2s of boot and is skipped entirely whenever the
+// ACPI HPET block is present (millis() below).
+pub fn init() {}
+
+fn tsc_millis() -> u64 {
     unsafe {
-        if TSC_PER_MS != 0 { return; }
-        // measure the TSC over exactly one RTC second (UIP edges)
-        rtc_wait_second_boundary();
-        let t0 = rdtsc();
-        rtc_wait_second_boundary();
-        let t1 = rdtsc();
-        let best = (t1 - t0) / 1000;
-        if best < 1000 { TSC_PER_MS = 1_000_000; } else { TSC_PER_MS = best; }
-        TSC_START = rdtsc();
+        if TSC_PER_MS == 0 {
+            // measure the TSC over exactly one RTC second (UIP edges)
+            rtc_wait_second_boundary();
+            let t0 = rdtsc();
+            rtc_wait_second_boundary();
+            let t1 = rdtsc();
+            let best = (t1 - t0) / 1000;
+            TSC_PER_MS = if best < 1000 { 1_000_000 } else { best };
+            TSC_START = rdtsc();
+        }
+        (rdtsc() - TSC_START) / TSC_PER_MS
     }
 }
 
 pub fn millis() -> u64 {
-    unsafe {
-        if TSC_PER_MS == 0 { init(); }
-        (rdtsc() - TSC_START) / TSC_PER_MS
+    if crate::hpet::available() {
+        crate::hpet::millis()
+    } else {
+        tsc_millis()
     }
 }
 

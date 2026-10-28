@@ -50,6 +50,7 @@ mod gdt;
 mod lapic;
 mod pit;
 mod percpu;
+mod hpet;
 mod smp;
 mod task;
 mod trap;
@@ -4874,6 +4875,29 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         put(b' ');
                         put_dec_n(&mut put, ids[i] as u64);
                     }
+                    // HPET: base, frequency and current counter (monotonic source)
+                    put_str_n(&mut put, b"\nHPET: ");
+                    if crate::hpet::available() {
+                        put_str_n(&mut put, b"base=0x");
+                        let mut hb = crate::hpet::BASE;
+                        let mut hexb = [0u8; 16];
+                        let mut hn = 0;
+                        if hb == 0 { put(b'0'); }
+                        while hb > 0 && hn < 16 {
+                            let d = (hb & 0xF) as usize;
+                            hexb[hn] = if d < 10 { b'0' + d as u8 } else { b'A' + (d - 10) as u8 };
+                            hb >>= 4;
+                            hn += 1;
+                        }
+                        while hn > 0 { hn -= 1; put(hexb[hn]); }
+                        put_str_n(&mut put, b" freq=");
+                        put_dec_n(&mut put, crate::hpet::freq_hz() / 1_000_000);
+                        put_str_n(&mut put, b"MHz t=");
+                        put_dec_n(&mut put, crate::timer::millis());
+                        put_str_n(&mut put, b"ms");
+                    } else {
+                        put_str_n(&mut put, b"absent (TSC fallback)");
+                    }
                     // per-core stats from the per-CPU area
                     put_str_n(&mut put, b"\ncore apic ticks ipis steal task\n");
                     for c in 0..total {
@@ -6693,6 +6717,9 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             unsafe { task::init(); }
             unsafe { pit::init(); }
             unsafe { acpi::init(); }
+            // HPET becomes the monotonic time source when the ACPI table exists;
+            // timer::millis() prefers it and the RTC/TSC dance stays a fallback
+            unsafe { hpet::init(crate::acpi::HPET_BASE); }
             unsafe { lapic::enable(); }
             // NOTE: the per-core LAPIC timer is intentionally NOT armed under
             // QEMU TCG: its handler cannot EOI (MMIO writes from LAPIC-interrupt
