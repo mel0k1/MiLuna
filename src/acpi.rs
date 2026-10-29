@@ -1,11 +1,11 @@
-// ACPI table discovery: RSDP -> RSDT/XSDT -> MADT (APIC) + HPET.
+// ACPI table discovery: RSDP -> RSDT/XSDT -> MADT (APIC), HPET.
 // Yields the Local APIC base address, the list of processor APIC IDs and
 // the HPET timer block base address.
 
 pub static mut LAPIC_BASE: u64 = 0xFEE00000;
 pub static mut APIC_IDS: [u8; 8] = [0; 8];
 pub static mut CPU_COUNT: usize = 0;
-pub static mut HPET_BASE: u64 = 0; // 0 until hpet::init() finds the table
+pub static mut HPET_BASE: u64 = 0;
 
 unsafe fn rd_u8(a: u64) -> u8 { core::ptr::read_volatile(a as *const u8) }
 unsafe fn rd_u32(a: u64) -> u32 { core::ptr::read_volatile(a as *const u32) }
@@ -26,8 +26,7 @@ unsafe fn sig_at(a: u64, s: &[u8; 4]) -> bool {
     rd_u32(a) == u32::from_le_bytes(*s)
 }
 
-// walk RSDT (u32 entries) or XSDT (u64 entries) looking for a table by
-// 4-byte signature ("APIC", "HPET", ...)
+// walk RSDT (u32 entries) or XSDT (u64 entries) looking for a table by signature
 unsafe fn find_table(table: u64, wide: bool, sig: &[u8; 4]) -> u64 {
     if table == 0 {
         return 0;
@@ -51,33 +50,49 @@ unsafe fn find_table(table: u64, wide: bool, sig: &[u8; 4]) -> u64 {
     0
 }
 
-// locate the Root System Description Pointer (EBDA tail + BIOS area)
-unsafe fn find_rsdp() -> u64 {
+pub unsafe fn init() {
+    // scan the EBDA tail and the BIOS area for the Root System Description Pointer
+    let mut rsdp: u64 = 0;
     let mut a: u64 = 0xE0000;
     while a < 0xFFFFF {
         if rsdp_valid(a) {
-            return a;
+            rsdp = a;
+            break;
         }
         a += 16;
     }
-    0
-}
-
-pub unsafe fn init() {
-    let rsdp = find_rsdp();
     if rsdp == 0 {
         return;
     }
     let revision = rd_u8(rsdp + 15);
-    let mut madt = 0u64;
-    if revision >= 2 {
-        madt = find_table(rd_u64(rsdp + 24), true, b"APIC"); // XSDT
-    }
+    let (rsdt, xsdt) = if revision >= 2 {
+        (rd_u32(rsdp + 16) as u64, rd_u64(rsdp + 24))
+    } else {
+        (rd_u32(rsdp + 16) as u64, 0)
+    };
+    let mut madt = find_table(xsdt, true, b"APIC");
     if madt == 0 {
-        madt = find_table(rd_u32(rsdp + 16) as u64, false, b"APIC"); // RSDT
+        madt = find_table(rsdt, false, b"APIC");
     }
     if madt == 0 {
         return;
+    }
+    // HPET (optional): the table's GAS field points at the MMIO timer block
+    let mut hp = find_table(xsdt, true, b"HPET");
+    if hp == 0 {
+        hp = find_table(rsdt, false, b"HPET");
+    }
+    if hp != 0 {
+        let len = rd_u32(hp + 4) as u64;
+        if len >= 52 {
+            // GAS layout: space id @40, bit width @41, bit offset @42,
+            // access size @43, 64-bit address @44 (12-byte structure)
+            let space = rd_u8(hp + 40); // GAS address space id: 0 = system memory
+            let addr = rd_u64(hp + 44);
+            if space == 0 && addr != 0 {
+                HPET_BASE = addr;
+            }
+        }
     }
     let lapic_base = rd_u32(madt + 36) as u64;
     if lapic_base != 0 {
@@ -105,31 +120,6 @@ pub unsafe fn init() {
         off += elen;
     }
     CPU_COUNT = count;
-}
-
-// HPET table: +28 event timer block id u32, +32 base address structure
-// (address space id @32, u64 address @36). Returns 0 when absent.
-pub unsafe fn hpet_base() -> u64 {
-    let rsdp = find_rsdp();
-    if rsdp == 0 {
-        return 0;
-    }
-    let mut hpet = 0u64;
-    if rd_u8(rsdp + 15) >= 2 {
-        hpet = find_table(rd_u64(rsdp + 24), true, b"HPET");
-    }
-    if hpet == 0 {
-        hpet = find_table(rd_u32(rsdp + 16) as u64, false, b"HPET");
-    }
-    if hpet == 0 {
-        return 0;
-    }
-    let addr = rd_u64(hpet + 36);
-    // only system-memory backed blocks are usable via our identity map
-    if rd_u8(hpet + 32) != 0 {
-        return 0;
-    }
-    addr
 }
 
 // BSP APIC id from IA32_APIC_BASE MSR (bits 24-31)

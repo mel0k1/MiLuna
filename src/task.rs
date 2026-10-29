@@ -104,6 +104,10 @@ pub struct Task {
     pub wait_pid: u32, // waitpid target (0 = any child)
     pub sigpend: u32,  // pending signal bitmap
     pub wake_ms: u64,  // HPET deadline while ST_SLEEPING (SYS_SLEEP)
+    // set when a waiter already collected the exit code: the slot must die,
+    // but the reap is DEFERRED until the core that still has the task as cur
+    // schedules away (see reap_collected_locked / the exit-path invariant)
+    pub collected: bool,
 }
 
 const TASK_TEMPLATE: Task = Task {
@@ -129,6 +133,7 @@ const TASK_TEMPLATE: Task = Task {
     wait_pid: 0,
     sigpend: 0,
     wake_ms: 0,
+    collected: false,
 };
 
 pub static mut TASKS: [Task; MAX_TASKS] = [TASK_TEMPLATE; MAX_TASKS];
@@ -564,7 +569,7 @@ fn schedule_inner(f: &mut TrapFrame, yielder: bool) -> u64 {
         if (*cur).state == ST_RUNNING {
             (*cur).state = ST_READY;
         }
-        reap_orphans();
+        reap_orphans_locked();
         let mut next: *mut Task = core::ptr::null_mut();
         let mut stole = false;
         let start = if (*cur).slot < MAX_TASKS { (*cur).slot } else { 0 };
@@ -626,9 +631,15 @@ fn schedule_inner(f: &mut TrapFrame, yielder: bool) -> u64 {
             }
             crate::percpu::bump(3);
             crate::percpu::cur_set(next);
+            // leave the outgoing address space BEFORE reaping it: switching
+            // CR3 while still under the lock guarantees no core (this one!)
+            // can fault on a page tree whose frames were just unref'd and
+            // possibly reallocated by another core's frame_alloc
+            switch_cr3((*next).cr3);
+            // the exiting core is now off the collected zombie - reap it here
+            reap_collected_locked();
             e9_tag(if stole { b'S' } else { b'N' });
             unlock_sched();
-            switch_cr3((*next).cr3);
             return (*next).saved_rsp;
         }
         // nothing pickable: keep a still-ready current, else park on the idle
@@ -661,15 +672,17 @@ fn schedule_inner(f: &mut TrapFrame, yielder: bool) -> u64 {
             { let b = b"Y"; for &c in b { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)); } }
             (*idle).state = ST_RUNNING;
             crate::percpu::cur_set(idle);
-            unlock_sched();
             switch_cr3((*idle).cr3);
+            reap_collected_locked();
+            unlock_sched();
             return (*idle).saved_rsp;
         }
         if (*idle).state == ST_READY {
             (*idle).state = ST_RUNNING;
             crate::percpu::cur_set(idle);
-            unlock_sched();
             switch_cr3((*idle).cr3);
+            reap_collected_locked();
+            unlock_sched();
             return (*idle).saved_rsp;
         }
         unlock_sched();
@@ -706,10 +719,19 @@ pub fn poke_owner(owner: u32) {
 }
 
 // ---- process lifecycle: zombie, reap, waitpid ---------------------------
+// EXIT-PATH INVARIANT (found the hard way under TCG with tasks on APs):
+// a slot and its address space may only be released (a) under SCHED_LOCK and
+// (b) when NO core has the task as cur and (c) after every core left the
+// task's CR3. Violating (b)/(c) let the exiting core keep running on a PML4
+// whose frame had refcnt 0: another core's build_ptree() zeroed it under the
+// runner -> random kernel #PFs, ghost resumptions and "double-run" panics.
+// So make_zombie only marks; the actual reap happens where the invariant
+// holds: right after a cur_set() moved the owning core away (schedule_inner)
+// or inline when nobody is cur (waitpid path).
 // Terminal state transition. If a parent is blocked in waitpid for this task
-// its parked frame gets the (exit_code<<32|pid) result and the child is reaped
-// immediately; otherwise the task lingers as a visible zombie until waitpid
-// or until the orphan reaper frees it.
+// its parked frame gets the (exit_code<<32|pid) result, the child is marked
+// collected and reaped by the first safe point; otherwise the task lingers
+// as a visible zombie until waitpid or until the orphan reaper frees it.
 pub unsafe fn make_zombie(t: *mut Task, code: u32) {
     lock_sched();
     (*t).exit_code = code;
@@ -727,11 +749,15 @@ pub unsafe fn make_zombie(t: *mut Task, code: u32) {
             (*p).state = ST_READY;
             (*p).wait_pid = 0;
             (*p).sigpend |= sig_bit(SIG_CHLD);
+            // parent already got the result: mark for deferred reap. The task
+            // may still be cur on the exiting core (we ARE that core) - the
+            // reap lands in schedule_inner right after its cur_set + CR3 move.
+            (*t).collected = true;
             let owner = (*p).owner;
+            reap_collected_locked();
             unlock_sched();
             { let b = b"W"; for &c in b { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)); } }
             poke_owner(owner);
-            reap(t);
             return;
         }
     }
@@ -757,12 +783,12 @@ pub unsafe fn make_zombie(t: *mut Task, code: u32) {
     reap_orphans();
 }
 
-// free the address space and release the slot.
-// NOTE: do NOT hold FRAME_LOCK across free_tree - it internally takes the
-// same lock in frame_ref/frame_unref, and a spin lock re-acquired by its
-// owner deadlocks forever (found the hard way: orphan reaping hung the
-// whole box right after the fork demo's parent exited).
-pub unsafe fn reap(t: *mut Task) {
+// free the address space and release the slot. CALLER HOLDS SCHED_LOCK.
+// do NOT hold FRAME_LOCK across free_tree - it internally takes the same
+// lock in frame_ref/frame_unref, and a spin lock re-acquired by its owner
+// deadlocks forever (found the hard way: orphan reaping hung the whole box
+// right after the fork demo's parent exited). SCHED->FRAME order is safe.
+unsafe fn reap_locked(t: *mut Task) {
     { let b = b"R"; for &c in b { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)); } }
     free_tree(t);
     (*t).state = ST_FREE;
@@ -805,25 +831,69 @@ pub unsafe fn wake_sleepers() {
     }
 }
 
-// reap zombies whose parent is gone (orphaned); called opportunistically.
+// is this task the current context of any core?
+fn is_cur_anywhere(t: *mut Task) -> bool {
+    for c in 0..crate::percpu::MAX_CPU {
+        if crate::percpu::cur_of(c) == t {
+            return true;
+        }
+    }
+    false
+}
+
+// reap a zombie if the invariant allows it right now (lock held).
+// Returns true when the slot was actually released.
+unsafe fn try_reap_locked(t: *mut Task) -> bool {
+    if (*t).state != ST_ZOMBIE || is_cur_anywhere(t) {
+        return false;
+    }
+    reap_locked(t);
+    true
+}
+
+// reap every collected zombie that no longer runs anywhere (lock held).
+// Called from make_zombie (a waiter was just served) and from schedule_inner
+// right after cur_set + the CR3 move took this core off the dying task -
+// that is the first point where the exit-path invariant holds.
+unsafe fn reap_collected_locked() {
+    for i in 0..MAX_TASKS {
+        let t = &mut TASKS[i] as *mut Task;
+        if (*t).state == ST_ZOMBIE && (*t).collected {
+            try_reap_locked(t);
+        }
+    }
+}
+
+// free the address space and release the slot (takes SCHED_LOCK itself).
+pub unsafe fn reap(t: *mut Task) {
+    lock_sched();
+    reap_locked(t);
+    unlock_sched();
+}
+
+// reap zombies whose parent is gone (orphaned); takes SCHED_LOCK itself.
 // NEVER reap a task that is the current context of some core: it may still be
 // executing its exit syscall on that core - freeing its address space under
 // it turns the core into a ghost that resumes user code with a destroyed
 // page tree (observed as a 1M-fault storm with rip inside a call's payload).
-unsafe fn reap_orphans() {
+// The old unlocked call from make_zombie raced schedule_inner's locked sweep
+// on another core: the same orphan was reaped twice, frame refcounts went
+// negative and still-live frames were handed to new tasks - silent user
+// memory corruption under TCG.
+pub unsafe fn reap_orphans() {
+    lock_sched();
+    reap_orphans_locked();
+    unlock_sched();
+}
+
+// caller holds SCHED_LOCK
+unsafe fn reap_orphans_locked() {
     for i in 0..MAX_TASKS {
         let t = &mut TASKS[i] as *mut Task;
         if (*t).state != ST_ZOMBIE {
             continue;
         }
-        let mut is_cur = false;
-        for c in 0..crate::percpu::MAX_CPU {
-            if crate::percpu::cur_of(c) == t {
-                is_cur = true;
-                break;
-            }
-        }
-        if is_cur {
+        if is_cur_anywhere(t) {
             continue;
         }
         let mut alive = false;
@@ -835,7 +905,7 @@ unsafe fn reap_orphans() {
             }
         }
         if !alive {
-            reap(t);
+            reap_locked(t);
         }
     }
 }
@@ -961,6 +1031,7 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 (*t).wait_pid = 0;
                 (*t).sigpend = 0;
                 (*t).wake_ms = 0;
+                (*t).collected = false;
                 (*t).name = (*cur).name;
                 // child frame: copy of the parent's; per-process address spaces
                 // mean user VAs are identical - no rebasing. rax = 0 in child.
@@ -1021,7 +1092,17 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 f.rax = 0;
             }
             SYS_WAIT => {
+                // the scan + collect/block decision MUST be atomic against
+                // make_zombie on other cores: unlocked, this either reaped a
+                // child still executing its exit path on another core (slot
+                // freed under a live frame -> ghost execution) or missed the
+                // child's transition entirely and blocked forever (lost
+                // wakeup). Under TCG both happen within seconds in the
+                // wait/cow/smp demos.
                 let want = f.rdi as u32; // 0 or -1 = any child
+                let mut result: u64 = u64::MAX;
+                let mut block = false;
+                lock_sched();
                 let mut found: *mut Task = core::ptr::null_mut();
                 let mut zombie: *mut Task = core::ptr::null_mut();
                 for i in 0..MAX_TASKS {
@@ -1042,16 +1123,23 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 if !zombie.is_null() {
                     let code = (*zombie).exit_code;
                     let pid = (*zombie).pid;
-                    reap(zombie);
-                    f.rax = ((code as u64) << 32) | pid as u64;
+                    // parent collected the result: mark and reap now unless
+                    // the child still runs its exit path on some core - then
+                    // that core's next schedule() finishes the reap
+                    (*zombie).collected = true;
+                    result = ((code as u64) << 32) | pid as u64;
+                    reap_collected_locked();
                 } else if !found.is_null() {
                     // block: wake-up happens in make_zombie when a child dies
                     (*cur).wait_pid = if want == u32::MAX { 0 } else { want };
                     (*cur).state = ST_WAITING;
-                    return schedule(f);
-                } else {
-                    f.rax = u64::MAX;
+                    block = true;
                 }
+                unlock_sched();
+                if block {
+                    return schedule(f);
+                }
+                f.rax = result;
             }
             SYS_SLEEP => {
                 // HPET-sleep: park the task until hpet::millis() reaches
@@ -1245,6 +1333,7 @@ pub fn spawn_elf(bin: &[u8], name: &[u8], fault: bool, prio: u32) -> i32 {
         (*t).wait_pid = 0;
         (*t).sigpend = 0;
         (*t).wake_ms = 0; // slots are reused: drop any previous sleeper's deadline
+        (*t).collected = false;
         for j in 0..16 {
             (*t).name[j] = if j < name.len() { name[j] } else { 0 };
         }
