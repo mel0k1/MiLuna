@@ -60,9 +60,10 @@ pub extern "C" fn smp_ap_entry(apic_id: u64) -> ! {
         // ring 0 with a user stack - silent kernel panic on the AP)
         crate::gdt::init_syscall();
         crate::lapic::enable();
-        // LAPIC timer intentionally NOT armed here - see lib.rs init notes
-        // (QEMU TCG drops EOI writes from its interrupt context, which would
-        // raise PPR and block this core's interrupt delivery)
+        // LAPIC timer is NOT armed here: the idle loop's tick_service arms
+        // this core's HPET-calibrated one-shot on its first pass (must run
+        // from task context - QEMU TCG drops interrupt-context MMIO writes,
+        // see lapic.rs)
         crate::task::init_idle(idx, (AP_STACKS[idx - 1].0.as_ptr() as u64) + 4096);
         crate::percpu::cur_set(crate::task::idle_ptr(idx));
         for i in 0..MAX_APS {

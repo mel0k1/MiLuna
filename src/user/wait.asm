@@ -12,7 +12,7 @@ default rel
 %define SYS_EXIT  3
 %define SYS_FORK  4
 %define SYS_GETPID 7
-%define SYS_WAIT  8
+%define SYS_WAIT  9           ; 8 is SYS_KILL now - wait was renumbered
 
 section .text
 global _start

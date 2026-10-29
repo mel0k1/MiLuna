@@ -36,6 +36,7 @@ pub const ST_ZOMBIE: u8 = 3;
 // legacy alias used by the GUI task manager for the dead/zombie color
 pub const ST_DEAD: u8 = ST_ZOMBIE;
 pub const ST_WAITING: u8 = 4;
+pub const ST_SLEEPING: u8 = 5; // blocked in SYS_SLEEP until wake_ms (HPET)
 pub const NO_OWNER: u32 = 0xFFFF_FFFF;
 
 pub const SYS_WRITE: u64 = 1;
@@ -47,6 +48,7 @@ pub const SYS_EXEC: u64 = 6;
 pub const SYS_GETPID: u64 = 7;
 pub const SYS_KILL: u64 = 8;
 pub const SYS_WAIT: u64 = 9;
+pub const SYS_SLEEP: u64 = 10; // rdi = milliseconds (HPET clock)
 
 // Signals (default actions only): INT/KILL/TERM are fatal, USR1/USR2/CHLD
 // are ignored until user handlers exist.
@@ -101,6 +103,7 @@ pub struct Task {
     pub owner: u32,    // cpu index running this task (NO_OWNER = none)
     pub wait_pid: u32, // waitpid target (0 = any child)
     pub sigpend: u32,  // pending signal bitmap
+    pub wake_ms: u64,  // HPET deadline while ST_SLEEPING (SYS_SLEEP)
 }
 
 const TASK_TEMPLATE: Task = Task {
@@ -125,6 +128,7 @@ const TASK_TEMPLATE: Task = Task {
     owner: NO_OWNER,
     wait_pid: 0,
     sigpend: 0,
+    wake_ms: 0,
 };
 
 pub static mut TASKS: [Task; MAX_TASKS] = [TASK_TEMPLATE; MAX_TASKS];
@@ -217,6 +221,7 @@ pub unsafe fn init() {
     t.owner = 0;
     t.wait_pid = 0;
     t.sigpend = 0;
+    t.wake_ms = 0;
     // the desktop kernel task runs at the lowest user priority: user tasks
     // always preempt it (old scheduler semantics), priority order among users
     let n = b"miluna-gui";
@@ -274,14 +279,12 @@ pub extern "C" fn idle_loop() -> ! {
             // from LAPIC-interrupt context (see lapic.rs) - a write from task
             // context does land, so the sweep unblocks later IPIs.
             //
-            // The LAPIC one-shot is NOT armed here: every v=24 fires with the
-            // EOI dropped by TCG, leaving the in-service bit stuck (PPR raised)
-            // until the next task-context sweep - thousands of blocked-delivery
-            // windows per second per core. Parked cores wake on resched IPIs
-            // (class 0x30 pierces a stuck class-0x20 ISR) and the BSP PIT
-            // scheduler steals parked work within one 20 ms tick. On real
-            // hardware, arming a periodic timer here is correct - see lapic.rs.
-            crate::lapic::eoi();
+            // tick_service also RE-ARMS this core's HPET-calibrated one-shot
+            // every SLICE_MS: parked cores wake 100 times a second, run one
+            // schedule() pass (they pick up spawned/stolen work without any
+            // IPI) and fall back into hlt. The stuck-ISR window between the
+            // fire and this sweep is a few instructions wide.
+            crate::lapic::tick_service();
             { let b = b"I"; for &c in b { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)); } }
             core::arch::asm!("sti", "hlt", options(nomem, nostack));
         }
@@ -548,6 +551,12 @@ fn schedule_inner(f: &mut TrapFrame, yielder: bool) -> u64 {
         if !SCHED_READY {
             return 0;
         }
+        // wake HPET-sleepers whose deadline passed before every scheduling
+        // decision; called outside the lock (it takes it itself). From timer
+        // handlers (interrupt context) the IPIs it sends may be dropped by
+        // TCG - the poked core still re-checks the queue at its next own
+        // timer fire, so a woken task is picked up within one slice anyway.
+        wake_sleepers();
         lock_sched();
         let cur = crate::percpu::cur();
         let me = crate::percpu::cpu_idx();
@@ -760,6 +769,42 @@ pub unsafe fn reap(t: *mut Task) {
     OUTPUT_DIRTY = true;
 }
 
+// Wake every ST_SLEEPING task whose HPET deadline (wake_ms) has passed.
+// Called from schedule_inner before every scheduling decision (PIT/LAPIC
+// timer/resched IPI/syscall yield), so any scheduling event on any core
+// retires due sleepers; deadline granularity is one scheduling event, well
+// under the 10 ms preemption slice. Waking = READY + poke the owner core
+// (an idle owner is also covered: every idle loop re-arms its own one-shot
+// and re-runs schedule 100 times a second, so the task is picked up even
+// when the poke IPI is swallowed by the TCG interrupt-context MMIO quirk).
+pub unsafe fn wake_sleepers() {
+    let now = crate::hpet::millis();
+    let mut pokes: [u32; MAX_TASKS] = [NO_OWNER; MAX_TASKS];
+    let mut npokes = 0usize;
+    let mut woke_any = false;
+    lock_sched();
+    for i in 0..MAX_TASKS {
+        let t = &mut TASKS[i] as *mut Task;
+        if (*t).state == ST_SLEEPING && now >= (*t).wake_ms {
+            (*t).state = ST_READY;
+            (*t).wake_ms = 0;
+            woke_any = true;
+            if npokes < MAX_TASKS {
+                pokes[npokes] = (*t).owner;
+                npokes += 1;
+            }
+        }
+    }
+    unlock_sched();
+    if woke_any {
+        OUTPUT_DIRTY = true;
+        for k in 0..npokes {
+            poke_owner(pokes[k]);
+        }
+        kick_idle();
+    }
+}
+
 // reap zombies whose parent is gone (orphaned); called opportunistically.
 // NEVER reap a task that is the current context of some core: it may still be
 // executing its exit syscall on that core - freeing its address space under
@@ -855,6 +900,14 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 }
                 (*cur).msg_len = n;
                 OUTPUT_DIRTY = true;
+                // debugcon echo: task output joins the E9 scheduler trace, so
+                // a headless boot log carries the full ordered demo transcript
+                let mut k = 0usize;
+                while k < n {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") (*cur).msg[k], options(nomem, nostack));
+                    k += 1;
+                }
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") 0x0Au8, options(nomem, nostack));
                 f.rax = 0;
             }
             SYS_YIELD => {
@@ -907,6 +960,7 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 (*t).owner = NO_OWNER;
                 (*t).wait_pid = 0;
                 (*t).sigpend = 0;
+                (*t).wake_ms = 0;
                 (*t).name = (*cur).name;
                 // child frame: copy of the parent's; per-process address spaces
                 // mean user VAs are identical - no rebasing. rax = 0 in child.
@@ -956,8 +1010,9 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 }
                 (*target).sigpend |= sig_bit(sig);
                 { let b = b"K"; for &c in b { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)); } }
-                if (*target).state == ST_WAITING {
+                if (*target).state == ST_WAITING || (*target).state == ST_SLEEPING {
                     // a blocked task never traps: terminate it right away
+                    // (ST_SLEEPING: its parked SYS_SLEEP frame must never resume)
                     make_zombie(target, 128 + sig);
                 } else {
                     let owner = (*target).owner;
@@ -997,6 +1052,17 @@ pub fn handle_syscall(f: &mut TrapFrame) -> u64 {
                 } else {
                     f.rax = u64::MAX;
                 }
+            }
+            SYS_SLEEP => {
+                // HPET-sleep: park the task until hpet::millis() reaches
+                // wake_ms. wake_sleepers() (every scheduling event) flips it
+                // back to READY; the frame below carries rax = 0 back to user.
+                let ms = f.rdi as u64;
+                f.rax = 0;
+                (*cur).wake_ms = crate::hpet::millis().saturating_add(ms);
+                (*cur).state = ST_SLEEPING;
+                OUTPUT_DIRTY = true;
+                return schedule(f);
             }
             SYS_EXEC => {
                 let idx = f.rdi as usize;
@@ -1178,6 +1244,7 @@ pub fn spawn_elf(bin: &[u8], name: &[u8], fault: bool, prio: u32) -> i32 {
         (*t).owner = NO_OWNER;
         (*t).wait_pid = 0;
         (*t).sigpend = 0;
+        (*t).wake_ms = 0; // slots are reused: drop any previous sleeper's deadline
         for j in 0..16 {
             (*t).name[j] = if j < name.len() { name[j] } else { 0 };
         }
@@ -1362,6 +1429,7 @@ pub fn state_name(s: u8) -> &'static str {
         ST_READY => "Ready",
         ST_ZOMBIE => "Zombie",
         ST_WAITING => "Waiting",
+        ST_SLEEPING => "Sleeping",
         _ => "Free",
     }
 }

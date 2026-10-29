@@ -11,6 +11,8 @@
 //   +48 steals (tasks stolen from other cores)
 //   +56 switches (context switches)
 //   +64 scratch (syscall entry: user rsp transit, per-core racing-safe)
+//   +72 last_sweep_ms (HPET ms of the last lapic tick_service sweep)
+//   +80 last_arm_ms   (HPET ms when this core's one-shot was last armed)
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
@@ -24,14 +26,16 @@ pub struct PerCpu {
     pub steals: u64,
     pub switches: u64,
     pub scratch: u64,
-    pub pad: [u64; 8],
+    pub last_sweep_ms: u64,
+    pub last_arm_ms: u64,
+    pub pad: [u64; 6],
 }
 
 pub const MAX_CPU: usize = 5;
 
 pub static mut CPUS: [PerCpu; MAX_CPU] = [PerCpu {
     selfp: 0, cur: 0, cpu: 0, apic: 0, ticks: 0, ipis: 0, steals: 0,
-    switches: 0, scratch: 0, pad: [0; 8],
+    switches: 0, scratch: 0, last_sweep_ms: 0, last_arm_ms: 0, pad: [0; 6],
 }; MAX_CPU];
 
 pub static mut ONLINE: usize = 1; // BSP only until APs report in
@@ -131,5 +135,29 @@ pub fn bump(field: u32) {
             2 => (*c).steals += 1,
             _ => (*c).switches += 1,
         }
+    }
+}
+
+// per-core LAPIC one-shot bookkeeping (tick_service / arm_slice state);
+// MUST be per-CPU - a shared stamp would make one core skip another's EOI sweep
+pub fn last_sweep_ms() -> u64 {
+    unsafe { core::ptr::read_volatile(&raw const CPUS[cpu_idx()].last_sweep_ms) }
+}
+
+pub fn set_last_sweep_ms(v: u64) {
+    unsafe {
+        let idx = cpu_idx();
+        core::ptr::write_volatile(&raw mut CPUS[idx].last_sweep_ms, v);
+    }
+}
+
+pub fn last_arm_ms() -> u64 {
+    unsafe { core::ptr::read_volatile(&raw const CPUS[cpu_idx()].last_arm_ms) }
+}
+
+pub fn set_last_arm_ms(v: u64) {
+    unsafe {
+        let idx = cpu_idx();
+        core::ptr::write_volatile(&raw mut CPUS[idx].last_arm_ms, v);
     }
 }

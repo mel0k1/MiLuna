@@ -4,20 +4,27 @@
 // QEMU TCG quirk: MMIO writes issued from LAPIC-interrupt context are
 // dropped, so a periodic LAPIC timer + EOI-in-handler deadlocks after the
 // first tick (ISR/IRR stuck, PPR raised). Workaround: run the timer in
-// ONE-SHOT mode and re-arm it from TASK context (tick_service) on a PIT
+// ONE-SHOT mode and re-arm it from TASK context (tick_service) on an HPET
 // clock - task-context MMIO writes land reliably. tick_service is called
-// from the GUI main loop and from every syscall (yield loop), so every
-// active core gets a steady ~50 Hz preemption stream, and the sweep effect
-// of the EOI also unsticks any pending IPI delivery.
+// from the GUI main loop, from every syscall and from the idle loops, so
+// every active core keeps a steady ~100 Hz preemption stream, and the sweep
+// effect of the EOI also unsticks any pending IPI delivery.
+//
+// The one-shot period is HPET-CALIBRATED: calibrate() counts how far the
+// TMCV down-counter runs during a known 30 ms HPET interval and stores
+// TICKS_PER_MS; arm_slice() then loads TICR = TICKS_PER_MS * SLICE_MS, so a
+// slice is a real 10 ms on every machine (no more fixed 62500 guess that
+// assumed a 1 GHz APIC bus).
 
 pub const VEC_TIMER: u8 = 0x24;   // per-core LAPIC timer -> schedule() (0x21 is IRQ1 keyboard!)
 pub const VEC_RESCHED: u8 = 0x31; // inter-core "look at the run queue" IPI
 
-// One-shot period small enough to expire well before the 20 ms re-arm
-// interval at any plausible bus frequency (62500 * 16ns = 1 ms).
-pub const TICR_FIXED: u32 = 62_500;
+// Preemption slice handed to every task, in milliseconds of HPET time.
+pub const SLICE_MS: u64 = 10;
 
-static mut LAST_TICKED: u64 = 0;
+// LAPIC timer down-counter ticks (after the /16 divider) per millisecond,
+// measured by calibrate() against the HPET. 0 = not calibrated yet.
+pub static mut TICKS_PER_MS: u64 = 0;
 
 pub unsafe fn reg(off: u32) -> *mut u32 {
     (crate::acpi::LAPIC_BASE + off as u64) as *mut u32
@@ -28,25 +35,84 @@ pub unsafe fn enable() {
     reg(0xF0).write_volatile(0x1FF);
 }
 
-// Arm the one-shot timer on THIS core (vector 0x21). APs repeat this in
-// smp_ap_entry with the same constant.
-pub unsafe fn timer_init() {
-    reg(0x3E0).write_volatile(3);            // divide by 16
-    reg(0x320).write_volatile(VEC_TIMER as u32); // one-shot, unmasked
-    reg(0x380).write_volatile(TICR_FIXED);
-}
-
-// Called from task context (GUI main loop, syscalls): the EOI clears any
-// in-service vector stuck by the TCG EOI quirk (e.g. a resched IPI), which
-// otherwise raises PPR and blocks this core's ExtINT delivery. Rate-limited
-// to once per PIT tick.
-pub unsafe fn tick_service() {
-    let t = crate::pit::ticks();
-    if t == core::ptr::read_volatile(&raw const LAST_TICKED) {
+// Measure this core's LAPIC timer frequency against the HPET: load the
+// one-shot with a full 32-bit count, sample TMCV (0x390) 30 ms of HPET time
+// apart, derive ticks-per-ms (post-divider). Called once on the BSP before
+// the APs come up; every core's APIC bus runs at the same frequency.
+pub unsafe fn calibrate() {
+    if !crate::hpet::available() {
+        // no HPET: fall back to the old hard-coded 1 GHz bus assumption
+        TICKS_PER_MS = 62_500;
+        cal_tag(0);
         return;
     }
-    LAST_TICKED = t;
-    reg(0xB0).write_volatile(0);             // EOI: clear stuck in-service bits
+    reg(0x3E0).write_volatile(3);                // divide by 16
+    reg(0x320).write_volatile(VEC_TIMER as u32); // one-shot, unmasked
+    reg(0x380).write_volatile(0xFFFF_FFFF);      // max initial count
+    let c0 = reg(0x390).read_volatile() as u64;
+    let h0 = crate::hpet::millis();
+    while crate::hpet::millis() - h0 < 30 {
+        core::hint::spin_loop();
+    }
+    let c1 = reg(0x390).read_volatile() as u64;
+    reg(0x380).write_volatile(0);                // stop the countdown
+    // down-counter: elapsed = (c0 - c1) mod 2^32, in post-divider ticks
+    let elapsed = c0.wrapping_sub(c1) & 0xFFFF_FFFF;
+    let tpm = elapsed / 30;
+    TICKS_PER_MS = if tpm < 1 { 1 } else { tpm };
+    cal_tag(TICKS_PER_MS);
+}
+
+// debugcon: "C" + 8 hex digits of ticks/ms (0 marks the no-HPET fallback)
+// so the boot log records the calibration result
+unsafe fn cal_tag(v: u64) {
+    let mut buf = [0u8; 10];
+    buf[0] = b'C';
+    let mut shift = 28i32;
+    let mut n = 1;
+    while shift >= 0 {
+        let d = ((v >> shift) & 0xF) as u8;
+        buf[n] = if d < 10 { b'0' + d } else { b'A' + d - 10 };
+        n += 1;
+        shift -= 4;
+    }
+    for i in 0..n {
+        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+    }
+}
+
+// Arm the one-shot timer for the next SLICE_MS on THIS core. Must run from
+// task context (idle loop, syscall, GUI frame) - interrupt-context MMIO
+// writes are dropped by QEMU TCG. APs pick this up through their idle loop
+// (idle_loop -> tick_service) right after parking.
+pub unsafe fn arm_slice() {
+    let tpm = core::ptr::read_volatile(&raw const TICKS_PER_MS);
+    if tpm == 0 {
+        return;
+    }
+    reg(0x3E0).write_volatile(3);                // divide by 16
+    reg(0x320).write_volatile(VEC_TIMER as u32); // one-shot, unmasked
+    // TICR in post-divider ticks; clamp so a very fast APIC bus still fits
+    let ticr = (tpm as u64 * SLICE_MS).min(0xFFFF_FFFF) as u32;
+    reg(0x380).write_volatile(ticr);
+    crate::percpu::set_last_arm_ms(crate::hpet::millis());
+}
+
+// Called from task context (GUI main loop, syscalls, idle loops): EOI any
+// in-service vector stuck by the TCG EOI quirk (e.g. a resched IPI or the
+// last timer fire), then re-arm the one-shot if the slice has elapsed.
+// Sweeps are rate-limited to 1 ms of HPET time to bound the MMIO traffic
+// from yield-heavy tasks.
+pub unsafe fn tick_service() {
+    let now = crate::hpet::millis();
+    if now == crate::percpu::last_sweep_ms() {
+        return;
+    }
+    crate::percpu::set_last_sweep_ms(now);
+    reg(0xB0).write_volatile(0);                 // EOI: clear stuck in-service bits
+    if now - crate::percpu::last_arm_ms() >= SLICE_MS {
+        arm_slice();
+    }
 }
 
 pub unsafe fn id() -> u8 {

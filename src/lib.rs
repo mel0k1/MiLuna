@@ -48,6 +48,7 @@ mod termfs;
 mod acpi;
 mod gdt;
 mod lapic;
+mod hpet;
 mod pit;
 mod percpu;
 mod smp;
@@ -63,6 +64,8 @@ static SIG_BIN: &[u8] = include_bytes!("../target/sig.elf");
 static COW_BIN: &[u8] = include_bytes!("../target/cow.elf");
 static WAIT_BIN: &[u8] = include_bytes!("../target/wait.elf");
 static SMP_BIN: &[u8] = include_bytes!("../target/smp.elf");
+static WAITPID_BIN: &[u8] = include_bytes!("../target/waitpid.elf");
+static SLEEP_BIN: &[u8] = include_bytes!("../target/sleep.elf");
 
 pub static mut NET_APP_REQUEST: u8 = 0;
 
@@ -4899,6 +4902,16 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         }
                         put(b'\n');
                     }
+                    // HPET + LAPIC timer calibration (TICR comes from here)
+                    put_str_n(&mut put, b"HPET: ");
+                    if crate::hpet::available() {
+                        put_str_n(&mut put, b"yes, lapic timer ");
+                        put_dec_n(&mut put, unsafe { core::ptr::read_volatile(&raw const crate::lapic::TICKS_PER_MS) });
+                        put_str_n(&mut put, b" ticks/ms, slice 10ms");
+                    } else {
+                        put_str_n(&mut put, b"not found");
+                    }
+                    put(b'\n');
                     core::str::from_utf8_unchecked(core::slice::from_raw_parts(
                         core::ptr::addr_of!(BUF) as *const u8,
                         *len,
@@ -5343,6 +5356,22 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                             "spawn failed"
                         }
                     }
+                    "waitpid" => {
+                        let pid = task::spawn_elf(WAITPID_BIN, b"waitpid-demo", false, 5);
+                        if pid >= 0 {
+                            "waitpid-demo spawned: waits for child-2 by PID first, then reaps child-1."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
+                    "sleep" => {
+                        let pid = task::spawn_elf(SLEEP_BIN, b"sleep-demo", false, 5);
+                        if pid >= 0 {
+                            "sleep-demo spawned: 3 x 400ms HPET-sleep (SYS_SLEEP) - watch the Sleeping state in `tasks`."
+                        } else {
+                            "spawn failed"
+                        }
+                    }
                     "smp" => {
                         let pid = task::spawn_elf(SMP_BIN, b"smp-demo", false, 5);
                         if pid >= 0 {
@@ -5353,7 +5382,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     }
                     "tasks" => task::list_tasks(),
                     "cpuinfo" => cpu_info(),
-                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, sig, smp, cow, wait, tasks - ring 3 processes\n  SMP:           cpuinfo - per-core ticks/IPIs/steals and current task",
+                    "help" => "  System:        ver, uptime, mem, about, tech, kernel, fetch\n  Users:         login, logout, whoami, users, useradd, userdel, passwd\n  Files:         dir, ls, cd, cat <file>, <filename>, disks, mount <N>, fs, new folder, ata, tals\n  EXT4:          ext4, ext4ls, ext4cat <file>, ext4info\n  Terminal:      cls, clear \n  Dev:           devs, developers, mide\n  Fun:           dice\n  GUI:           gui /start --all (graphical mode), gui /stop\n  Notepad:       notepad /start (only inside GUI)\n  Power:         shutdown\n  Advanced:      stop gui, del ram\n  Other:         tutorial\n  Media:         media - BMP image viewer\n  HTML:          html /start - HTML4 viewer (test.html)\n  Support:       support - MiLuna Support Center\n  MiDE Settings: miluna/grap/wm2.rs\n  Apps:          call <app_name> [args], list-apps\n  Cre Tool:      cre-tool - graphical app builder\n  GL:            gl /start, gl /stop - 3D gears\n  Display:       display /scr 1920x1080, display /scr default\n start modules:   /start --inf\n PC INFO:        pc --info\n  Network:       ifconfig, nslookup <host>, wget [-s] <url>, net (окно Network)\n  Browser:       browser [адрес] - веб-браузер (HTML, CSS, HTTPS)\n  Tasks:         hello, hello fault, nx, fork, prio, exec, sig, smp, cow, wait, waitpid, sleep, tasks - ring 3 processes\n  SMP:           cpuinfo - per-core ticks/IPIs/steals and current task",
                     "ver" => "MiLuna 1.0.0",
                     "fetch" | "neofetch" => fetch_info(),
                     "mem" => mem_info(),
@@ -6684,15 +6713,16 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             unsafe { task::init(); }
             unsafe { pit::init(); }
             unsafe { acpi::init(); }
+            // HPET before the LAPIC timer: calibrate() measures the APIC
+            // down-counter against HPET milliseconds to derive TICR
+            unsafe { hpet::init(); }
             unsafe { lapic::enable(); }
-            // NOTE: the per-core LAPIC timer is intentionally NOT armed under
-            // QEMU TCG: its handler cannot EOI (MMIO writes from LAPIC-interrupt
-            // context are dropped there), the in-service vector sticks in ISR,
-            // raises PPR to its priority class and blocks ExtINT (PIT+keyboard)
-            // delivery until the next task-context EOI sweep. PIT keeps driving
-            // BSP scheduling; AP cores run cooperatively + resched IPIs.
-            // On real hardware timer_init() on every core is correct and the
-            // EOI-in-handler works - see lapic.rs for the full story.
+            // HPET-calibrated per-core LAPIC timer: calibrate() derives
+            // TICKS_PER_MS, then every core keeps a 10 ms one-shot armed from
+            // TASK context (idle loops, syscalls, GUI frames) - interrupt-
+            // context MMIO writes are dropped by QEMU TCG (see lapic.rs), so
+            // the handler never re-arms or EOIs reliably by itself.
+            unsafe { lapic::calibrate(); }
             unsafe { smp::init(); }
 
             let mut cursor_x = 400usize;
